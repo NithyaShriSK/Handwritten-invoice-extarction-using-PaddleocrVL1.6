@@ -1,0 +1,22 @@
+{
+  "company_name": "NAGANNA RAAJAA SILK INDUSTRIES",
+  "company_gst_no": "33DCRPK0145Q1Z5",
+  "invoice_number": "154",
+  "invoice_date": "2024-11-07",
+  "state_code": "33",
+  "vehicle_number": null,
+  "transportation_mode": null,
+  "products_list": [
+    {
+      "product_name": "Raw Silk",
+      "hsn_code": "5002",
+      "quantity": 10.648,
+      "rate": 5550,
+      "amount": 59097
+    }
+  ],
+  "total_amount": 59097,
+  "buyer_name": "KAVITHAS CREATIONS",
+  "buyer_gst_no": "33EAZPK0812F1ZP",
+  "total_amount_in_words": "Rupees Fifty Nine Thousand Ninty Four Seven Rupees only"
+}
