@@ -11,20 +11,24 @@ import ollama
 from transformers import AutoConfig, AutoProcessor, AutoModel
 
 # ---- Settings ----
+# ---- Settings ----
 model_path = "PaddlePaddle/PaddleOCR-VL-1.6"
 image_path = "invoice.png"  # Swap this out dynamically for any invoice image file
 
 # Use "table" mode to preserve multi-column structured text layouts
 task = "table" 
 
-# Splitting Configuration & File Saving Targets
-output_slices_dir = "invoice_slices"
-preprocessed_image_output_path = "preprocessed_full_invoice.png"
-raw_txt_output_path = "raw_ocr_result.txt"
-final_json_output_path = "invoice_data.json"
+# Dynamic Path Discovery: Anchors everything to the directory where this script runs
+BASE_DIR = os.path.dirname(os.path.abspath(__file__)) if '__file__' in locals() else os.getcwd()
+
+output_slices_dir = os.path.join(BASE_DIR, "invoice_slices")
+preprocessed_image_output_path = os.path.join(BASE_DIR, "preprocessed_full_invoice.png")
+raw_txt_output_path = os.path.join(BASE_DIR, "raw_ocr_result.txt")
+final_json_output_path = os.path.join(BASE_DIR, "invoice_data.json")
 
 # Configured for local LLaMA 3 execution
 OLLAMA_MODEL = "llama3" 
+# ------------------
 # ------------------
 
 # Ensure output directory for slices exists
@@ -521,9 +525,12 @@ try:
         
     parsed_json = process_minor_corrections(parsed_json)
         
+    # Atomic absolute-path save
     with open(final_json_output_path, "w", encoding="utf-8") as json_file:
         json.dump(parsed_json, json_file, indent=2, ensure_ascii=False)
-        
+        json_file.flush()  
+        os.fsync(json_file.fileno()) 
+
     print("\n=== FINAL PARSED STRUCTURED JSON RESULT ===")
     print(json.dumps(parsed_json, indent=2, ensure_ascii=False))
     print(f"\n[SUCCESS] Document structural output safely compiled into: {final_json_output_path}")

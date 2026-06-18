@@ -1,25 +1,25 @@
 {
-  "seller_name": "Sri Balaji Textiles",
-  "seller_gst_no": "33FLWPM5155A1ZY",
-  "invoice_number": "151",
-  "invoice_date": "14/11/2024",
-  "buyer_name": null,
-  "buyer_gst_no": null,
-  "product_details": [],
-  "subtotal": null,
-  "cgst_percentage": null,
+  "company_name": "NAGANNA RAAJAA SILK INDUSTRIES  <nl> 15/4 A, Radio Room Backside, Thottathusalai, Doddampalayam-638451",
+  "company_gst_no": "33DCRPK0145Q1Z5",
+  "invoice_number": "155",
+  "invoice_date": "28/11/2024",
+  "state_code": "33",
+  "vehicle_number": null,
+  "transportation_mode": null,
+  "products_list": [
+    {
+      "product_name": "Row 5 Sil.",
+      "hsn_code": "5002",
+      "quantity": 1.718,
+      "rate": 5320,
+      "amount": 62
+    }
+  ],
   "cgst_amount": null,
-  "sgst_percentage": null,
   "sgst_amount": null,
-  "igst_percentage": null,
   "igst_amount": null,
-  "total_tax": null,
-  "grand_total": null,
-  "bank_details": {
-    "account_name": null,
-    "account_number": null,
-    "bank_name": null,
-    "ifsc_code": null,
-    "branch": null
-  }
+  "total_amount": 62658.1,
+  "buyer_gst_no": "33ENZPK081RFLZR",
+  "buyer_name": "KAVITHAS CREATIONS",
+  "total_amount_in_words": "Rupees Sixty Two Thousand Six Hundred D. Fifty Eight Rupees"
 }
