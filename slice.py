@@ -18,15 +18,13 @@ image_path = "invoice.png"  # Swap this out dynamically for any invoice image fi
 task = "table" 
 
 # Splitting Configuration & File Saving Targets
-num_slices = 2
-overlap_px = 70
 output_slices_dir = "invoice_slices"
 preprocessed_image_output_path = "preprocessed_full_invoice.png"
 raw_txt_output_path = "raw_ocr_result.txt"
 final_json_output_path = "invoice_data.json"
 
-# Configured for local engine execution
-OLLAMA_MODEL = "qwen2.5:7b" 
+# Configured for local LLaMA 3 execution
+OLLAMA_MODEL = "llama3" 
 # ------------------
 
 # Ensure output directory for slices exists
@@ -79,87 +77,87 @@ def preprocess_image(image_path, scale_factor=3.0, save_path="preprocessed_full_
 
     return pil_img
 
-def get_smart_crops_from_pil(pil_image, num_slices=2, overlap_px=70, out_dir="invoice_slices"):
+def get_smart_crops_from_pil(pil_image, out_dir="invoice_slices"):
     img = cv2.cvtColor(np.array(pil_image.convert("RGB")), cv2.COLOR_RGB2BGR)
     h, w = img.shape[:2]
+    print(f"Image size for slicing: {w}x{h}")
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-
-    kernel = np.ones((1, 1), np.uint8)
-    morphed = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel)
-
-    edges = cv2.Canny(morphed, 50, 150, apertureSize=3)
-    lines = cv2.HoughLinesP(edges, 1, np.pi/180, 100, minLineLength=100, maxLineGap=10)
-
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary)
-
-    valid_components = []
-    for i in range(1, num_labels):
-        x, y, cw, ch, area = stats[i]
-        if 15 < area < (h * w * 0.8) and ch < h * 0.5:
-            valid_components.append((y, y + ch))
-            
-    cc_mask = np.zeros(h, dtype=np.uint8)
-    for y_start, y_end in valid_components:
-        cc_mask[max(0, y_start):min(h, y_end)] = 1
-
-    line_y_coords = []
-    if lines is not None:
-        for line in lines:
-            x1, y1, x2, y2 = line[0]
-            if abs(y1 - y2) < 3 and abs(x1 - x2) > 50:
-                line_y_coords.append((y1 + y2) // 2)
-
-    ideal_step = h // num_slices
-    actual_cut_points = [0]
-    gutters = np.where(cc_mask == 0)[0]
     
-    for i in range(1, num_slices):
-        target = i * ideal_step
-        if len(gutters) > 0:
-            closest_gutter = gutters[np.abs(gutters - target).argmin()]
-            if line_y_coords:
-                closest_line = min(line_y_coords, key=lambda ly: abs(ly - closest_gutter))
-                if abs(closest_line - closest_gutter) < 45:
-                    closest_gutter = closest_line
-            actual_cut_points.append(int(closest_gutter))
-        else:
-            actual_cut_points.append(int(target))
-    actual_cut_points.append(h)
+    # Threshold to find dark structures (lines)
+    binary_lines = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY_INV)[1]
 
+    # Detect horizontal lines across the invoice using a large horizontal kernel
+    horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (int(w * 0.5), 1))
+    detected_lines = cv2.morphologyEx(binary_lines, cv2.MORPH_OPEN, horizontal_kernel)
+    
+    # Extract row positions where horizontal lines exist
+    line_rows = np.where(np.sum(detected_lines > 0, axis=1) > (w * 0.3))[0]
+
+    # Group continuous line pixels together to find distinct single-line coordinates
+    structural_cuts = []
+    if len(line_rows) > 0:
+        current_group = [line_rows[0]]
+        for y in line_rows[1:]:
+            if y - current_group[-1] <= 5:
+                current_group.append(y)
+            else:
+                structural_cuts.append(int(np.median(current_group)))
+                current_group = [y]
+        structural_cuts.append(int(np.median(current_group)))
+
+    # Filter cuts to make sure they aren't right at the very top or bottom edge
+    structural_cuts = [c for c in structural_cuts if int(h * 0.1) < c < int(h * 0.9)]
+    print(f"Detected structural table lines at Y-positions: {structural_cuts}")
+
+    final_cuts = []
+    target_slices = 3
+    ideal_positions = [(h // target_slices) * i for i in range(1, target_slices)]
+
+    # Map each target section break to the closest real table boundary line
+    for ideal_y in ideal_positions:
+        if len(structural_cuts) > 0:
+            # Find the closest physical line to our ideal cut location
+            closest_line = min(structural_cuts, key=lambda x: abs(x - ideal_y))
+            # Only use it if it's within a reasonable distance (250px) of our target zone
+            if abs(closest_line - ideal_y) < 250 and closest_line not in final_cuts:
+                final_cuts.append(closest_line)
+                continue
+        
+        # Absolute fallback if no physical line is nearby: use strict gap calculation
+        final_cuts.append(ideal_y)
+
+    final_cuts = sorted(list(set(final_cuts)))
+    print(f"Final aligned text-safe slice positions: {final_cuts}")
+
+    # Generate slices cleanly without duplicate overlaps
+    boundaries = [0] + final_cuts + [h]
     crops = []
-    saved_index = 1
-    for i in range(len(actual_cut_points) - 1):
-        start = max(0, actual_cut_points[i] - overlap_px)
-        end = min(h, actual_cut_points[i + 1] + overlap_px)
-        
-        slice_binary = binary[start:end, 0:w]
-        text_pixel_ratio = np.sum(slice_binary == 255) / slice_binary.size
-        
-        if text_pixel_ratio < 0.005: 
-            print(f"[Skip] Slice boundary {start}-{end} skipped.")
-            continue
-            
-        crop_cv = img[start:end, 0:w]
-        if crop_cv.shape[0] > 10:
-            slice_filename = os.path.join(out_dir, f"slice_{saved_index}.png")
-            cv2.imwrite(slice_filename, crop_cv)
-            print(f"[Save] Saved valid segment text layer: {slice_filename}")
 
-            crop_pil = Image.fromarray(cv2.cvtColor(crop_cv, cv2.COLOR_BGR2RGB))
-            crops.append(crop_pil)
-            saved_index += 1
+    for i in range(len(boundaries) - 1):
+        start = boundaries[i]
+        end = boundaries[i + 1]
+
+        crop = img[start:end, :]
+
+        if crop.shape[0] < 40:
+            continue
+
+        filename = os.path.join(out_dir, f"slice_{i+1}.png")
+        cv2.imwrite(filename, crop)
+        print(f"[SAVE] {filename} with shape: {crop.shape}")
+
+        crop_pil = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+        crops.append(crop_pil)
 
     return crops
 
 print("=== Starting Advanced Image Preprocessing ===")
 preprocessed_full_image = preprocess_image(image_path, scale_factor=3.0, save_path=preprocessed_image_output_path)
-slices = get_smart_crops_from_pil(preprocessed_full_image, num_slices=num_slices, overlap_px=overlap_px, out_dir=output_slices_dir)
+slices = get_smart_crops_from_pil(preprocessed_full_image, out_dir=output_slices_dir)
 print(f"=== Generated and saved {len(slices)} valid text segments ===\n")
 
 # Image resolution control for PaddleOCR-VL
-min_pixels = 512 * 512
 max_pixels = 2048 * 2048
 
 # -------- Inference Setup --------
@@ -226,7 +224,7 @@ for index, slice_img in enumerate(slices):
     ).to(model.device)
 
     with torch.no_grad():
-        outputs = model.generate(**inputs, max_new_tokens=512,do_sample=True,temperature=0.01,top_p=0.1,repetition_penalty=1.05)
+        outputs = model.generate(**inputs, max_new_tokens=512, do_sample=True, temperature=0.01, top_p=0.1, repetition_penalty=1.05)
 
     slice_result = processor.decode(outputs[0][inputs["input_ids"].shape[-1]:-1], skip_special_tokens=True)
     aggregated_text.append(slice_result)
@@ -381,7 +379,7 @@ def advanced_deterministic_extraction(text):
 p_company, p_inv, p_date, p_buyer, p_comp_gst, p_buyer_gst, p_words, p_cgst, p_sgst, p_igst = advanced_deterministic_extraction(full_raw_ocr_string)
 
 
-# -------- 3. DYNAMIC QWEN PARSING SYSTEM --------
+# -------- 3. DYNAMIC LLAMA3 PARSING SYSTEM --------
 print(f"\n=== Sending Consolidated Text to Ollama Model ({OLLAMA_MODEL}) ===")
 
 llm_prompt = f"""
@@ -393,7 +391,7 @@ Deterministic Ground-Truth Overrides:
 - "invoice_number": "{p_inv}"
 - "invoice_date": "{p_date}"
 - "buyer_name": "{p_buyer}"
-- "buyer_gst_no": "{p_buyer_gst}"
+- "buyer_gst_no": "{p_buyer_gst if p_buyer_gst else 'null'}"
 - "total_amount_in_words": "{p_words}"
 - "cgst_amount": {p_cgst if p_cgst is not None else 'null'}
 - "sgst_amount": {p_sgst if p_sgst is not None else 'null'}
@@ -426,38 +424,29 @@ Target JSON Schema Structure:
   "total_amount_in_words": "string or null"
 }}
 
-Rules:
-- Fill in any remaining fields using context available in the Raw OCR Text Data.
-- If "company_name" is null in the overrides, find the actual business trading title name string located at the absolute top of the text canvas (e.g. "NAGANNA RAAJAA SILK INDUSTRIES") and map it.
-- Convert values for all tax and itemized total breakdowns strictly to numbers (ints or floats).
-- Output ONLY valid JSON code. Do not wrap output in ```json or add summary notes.
+Strict Behavioral Rules:
+1. FORCE FRESH LOOKUP: Do NOT recall, inherit, or reuse any data strings, identifiers, names, or values from previous examples or history chats. Look ONLY at the provided "Raw OCR Text Data" for this specific run.
+2. ABSOLUTE FORBIDDEN VALUE: Never output the string "10DUSTR1050I5ZZ" under any circumstances unless it is written explicitly down inside the current Raw OCR Text Data block below. 
+3. OVERRIDE EXCEPTION RULE: If "buyer_gst_no" above is "null", look at the buyer billing section in the current text below. Locate the 15-character string following the label "GSTIN:" (e.g., "33EANNK..."). Strip all inner whitespace gaps (e.g., turn "33EAZNK0812FLZR" or spaces into a solid block) and capture it.
+4. If "company_name" is null or missing in the overrides, extract the legal business trading title displayed prominently at the absolute top of the text canvas (e.g. "NAGANNA RAAJAA SILK INDUSTRIES").
+5. Convert values for all tax and itemized total breakdowns strictly to numbers (ints or floats). Remove any commas or trailing slashes ("/-") before saving.
+6. Output ONLY valid JSON code. Do not wrap output in ```json or add summary notes.
 
 Raw OCR Text Data:
 {full_raw_ocr_string}
 """
-
 def clean_and_normalize_digits(val):
-    """
-    Cleans minor OCR text misinterpretations in numeric fields without applying 
-    multiplication/arithmetic corrections. Replaces obvious letter swaps (O->0, I->1, etc.)
-    and drops remaining non-numeric trash characters.
-    """
     if val is None:
         return None
     if isinstance(val, (int, float)):
         return val
         
-    # Cast to upper string for translation map evaluations
     s = str(val).upper().strip()
-    
-    # Common optical character swap translations
     swaps = {'O': '0', 'Q': '0', 'I': '1', 'L': '1', 'S': '5', 'Z': '2', 'B': '8'}
     for char, replacement in swaps.items():
         s = s.replace(char, replacement)
         
-    # Strip any remaining stray alphabetical characters or noise, keeping numbers and decimals
     cleaned = re.sub(r'[^0-9.]', '', s)
-    
     if not cleaned:
         return None
         
@@ -467,20 +456,13 @@ def clean_and_normalize_digits(val):
         return None
 
 def process_minor_corrections(data):
-    """
-    Loops through the raw LLM extracted products list to clean up number fields 
-    directly without recalculating fields or overriding semantic data.
-    """
     cleaned_products = []
     for item in data.get("products_list", []):
         if not isinstance(item, dict):
             continue
             
-        # Extract fields exactly as parsed by the LLM
         prod_name = item.get("product_name")
         hsn_code = item.get("hsn_code")
-        
-        # Apply minor letter-to-number fixes to data arrays
         qty = clean_and_normalize_digits(item.get("quantity"))
         rate = clean_and_normalize_digits(item.get("rate"))
         amount = clean_and_normalize_digits(item.get("amount"))
@@ -495,7 +477,6 @@ def process_minor_corrections(data):
         
     data["products_list"] = cleaned_products
     
-    # Clean global tax/totals numeric fields for consistency using the same logic
     for field in ["cgst_amount", "sgst_amount", "igst_amount", "total_amount"]:
         if field in data:
             data[field] = clean_and_normalize_digits(data[field])
@@ -503,8 +484,13 @@ def process_minor_corrections(data):
     return data
 
 try:
-    response = ollama.generate(model=OLLAMA_MODEL, prompt=llm_prompt)
-    response_text = response['response'].strip()
+    # UPDATED: Changed from ollama.generate to ollama.chat to ensure stable system constraint compliance on LLaMA 3
+    response = ollama.chat(
+        model=OLLAMA_MODEL, 
+        messages=[{"role": "user", "content": llm_prompt}],
+        options={"temperature": 0.0}
+    )
+    response_text = response['message']['content'].strip()
     
     if response_text.startswith("```json"):
         response_text = response_text[7:]
@@ -533,7 +519,6 @@ try:
     if (not parsed_json.get("state_code") or parsed_json["state_code"] == "null") and parsed_json.get("company_gst_no"):
         parsed_json["state_code"] = parsed_json["company_gst_no"][:2]
         
-    # Execute minor normalization fixes without altering values via mathematical equations
     parsed_json = process_minor_corrections(parsed_json)
         
     with open(final_json_output_path, "w", encoding="utf-8") as json_file:
