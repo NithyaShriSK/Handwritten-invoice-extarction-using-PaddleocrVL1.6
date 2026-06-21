@@ -1,6 +1,5 @@
 import streamlit as st
 import json
-import os
 import tempfile
 from PIL import Image
 
@@ -81,8 +80,6 @@ uploaded_file = st.file_uploader(
 if uploaded_file:
 
 
-    # Save temporary image
-
     temp_file = tempfile.NamedTemporaryFile(
         delete=False,
         suffix=".png"
@@ -100,7 +97,7 @@ if uploaded_file:
 
 
 
-    col1,col2 = st.columns(2)
+    col1, col2 = st.columns(2)
 
 
 
@@ -142,7 +139,6 @@ if uploaded_file:
 
                 try:
 
-
                     result = run_ocr_pipeline(
                         image_path
                     )
@@ -161,6 +157,7 @@ if uploaded_file:
                     st.error(
                         f"OCR Error : {e}"
                     )
+
 
 
 
@@ -184,8 +181,13 @@ if "data" in st.session_state:
 
 
 
-    col1,col2 = st.columns(2)
+    col1, col2 = st.columns(2)
 
+
+
+    # =============================
+    # LEFT COLUMN
+    # =============================
 
 
     with col1:
@@ -227,10 +229,6 @@ if "data" in st.session_state:
         )
 
 
-
-    with col2:
-
-
         data["buyer_name"] = st.text_input(
             "Buyer Name",
             value=data.get(
@@ -249,18 +247,100 @@ if "data" in st.session_state:
         )
 
 
-        # Safe conversion to prevent casting errors
+
+    # =============================
+    # RIGHT COLUMN
+    # =============================
+
+
+    with col2:
+
+
+        # Total Amount
+
         try:
-            raw_total = data.get("total_amount", 0)
-            total_val = float(raw_total) if raw_total is not None else 0.0
-        except (ValueError, TypeError):
+            total_val = float(
+                data.get(
+                    "total_amount",
+                    0
+                )
+            )
+
+        except:
+
             total_val = 0.0
+
 
         data["total_amount"] = st.number_input(
             "Total Amount",
             value=total_val
         )
 
+
+
+        # CGST
+
+        try:
+            cgst_val = float(
+                data.get(
+                    "cgst_amount",
+                    0
+                )
+            )
+
+        except:
+
+            cgst_val = 0.0
+
+
+        data["cgst_amount"] = st.number_input(
+            "CGST Amount",
+            value=cgst_val
+        )
+
+
+
+        # SGST
+
+        try:
+            sgst_val = float(
+                data.get(
+                    "sgst_amount",
+                    0
+                )
+            )
+
+        except:
+
+            sgst_val = 0.0
+
+
+        data["sgst_amount"] = st.number_input(
+            "SGST Amount",
+            value=sgst_val
+        )
+
+
+
+        # IGST
+
+        try:
+            igst_val = float(
+                data.get(
+                    "igst_amount",
+                    0
+                )
+            )
+
+        except:
+
+            igst_val = 0.0
+
+
+        data["igst_amount"] = st.number_input(
+            "IGST Amount",
+            value=igst_val
+        )
 
 
 
@@ -280,8 +360,9 @@ if "data" in st.session_state:
     )
 
 
-    if not isinstance(products,list):
-        products=[]
+    if not isinstance(products, list):
+
+        products = []
 
 
 
@@ -292,7 +373,7 @@ if "data" in st.session_state:
 
 
 
-    st.session_state.data=data
+    st.session_state.data = data
 
 
 
@@ -301,11 +382,15 @@ if "data" in st.session_state:
     # =============================
 
 
-    final_json=json.dumps(
+    st.divider()
+
+
+    final_json = json.dumps(
         data,
         indent=2,
         ensure_ascii=False
     )
+
 
 
     st.download_button(
@@ -320,6 +405,11 @@ if "data" in st.session_state:
 
     )
 
+
+
+    # =============================
+    # DISPLAY JSON
+    # =============================
 
 
     with st.expander(
