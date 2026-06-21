@@ -1,0 +1,19 @@
+{
+  "products_list": [
+    {
+      "product_name": "New Silk",
+      "hsn_code": null,
+      "quantity": 50.53,
+      "rate": 6550.0,
+      "amount": 28449.0
+    },
+    {
+      "product_name": "New Silk",
+      "hsn_code": null,
+      "quantity": 50.53,
+      "rate": 6550.0,
+      "amount": 28449.0
+    }
+  ],
+  "total_amount_in_words": "Rupees Twenty Eight Thousand Forty Seven Rupees Only,"
+}

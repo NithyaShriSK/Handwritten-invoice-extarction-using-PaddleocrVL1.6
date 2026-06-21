@@ -1,25 +1,25 @@
 {
-  "company_name": "NAGANNA RAAJAA SILK INDUSTRIES  <nl> 15/4 A, Radio Room Backside, Thottathusalai, Doddampalayam-638451",
+  "company_name": "NAGANNA RAAJAA SILK INDUSTRIES",
   "company_gst_no": "33DCRPK0145Q1Z5",
-  "invoice_number": "155",
-  "invoice_date": "28/11/2024",
+  "invoice_number": "152",
+  "invoice_date": "24/11/2024",
   "state_code": "33",
   "vehicle_number": null,
   "transportation_mode": null,
   "products_list": [
     {
-      "product_name": "Row 5 Sil.",
-      "hsn_code": "5002",
-      "quantity": 1.718,
-      "rate": 5320,
-      "amount": 62
+      "product_name": "New Silk",
+      "hsn_code": "6002",
+      "quantity": 5.053,
+      "rate": 6550,
+      "amount": 28049
     }
   ],
   "cgst_amount": null,
   "sgst_amount": null,
   "igst_amount": null,
-  "total_amount": 62658.1,
-  "buyer_gst_no": "33ENZPK081RFLZR",
-  "buyer_name": "KAVITHAS CREATIONS",
-  "total_amount_in_words": "Rupees Sixty Two Thousand Six Hundred D. Fifty Eight Rupees"
+  "total_amount": 28047,
+  "buyer_name": "SHREE KUMARAN SORCES",
+  "buyer_gst_no": "33AWEPN0221G1Z5",
+  "total_amount_in_words": "Twenty-eight thousand forty-seven Only"
 }
