@@ -202,6 +202,12 @@ MAX_REPORT_RECORDS=100
 OLLAMA_MODEL=llama3
 REPORT_RETENTION_DAYS=30
 ```
+Create a `.env` file in the frontend directory:
+```env
+VITE_API_URL=http://localhost:5000
+VITE_GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
+
+```
 
 ### 3. Frontend Setup
 Navigate into the `frontend` folder, install package dependencies, and start the development server:
@@ -328,8 +334,6 @@ ollama list
 ### Authors
 * **Boomika S** - [GitHub](https://github.com/boomiikas) | [LinkedIn](https://www.linkedin.com/in/boomika-s-981b55311/)
 * **Nithya Shri S K** - [GitHub](https://github.com/NithyaShriSK) | [LinkedIn](https://www.linkedin.com/in/nithya-shri-s-k-670531353/)
-
-**Institution:** Computer Science Engineering Students
 
 ---
 
