@@ -1,0 +1,114 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer utilities {
+  /* Glassmorphism custom classes with Emerald accents */
+  .glass-card {
+    background-color: rgba(255, 255, 255, 0.75);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.05);
+  }
+  
+  .dark .glass-card {
+    background-color: rgba(30, 41, 59, 0.75);
+    border: 1px solid rgba(51, 65, 85, 0.4);
+    box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.7);
+  }
+  
+  .glass-card-hover {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .glass-card-hover:hover {
+    background-color: rgba(255, 255, 255, 0.95);
+    border-color: rgba(16, 185, 129, 0.35);
+  }
+  
+  .dark .glass-card-hover:hover {
+    background-color: rgba(30, 41, 59, 0.85);
+    border-color: rgba(16, 185, 129, 0.45);
+  }
+  
+  .glass-input {
+    background-color: rgba(255, 255, 255, 0.5);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    border: 1px solid rgba(228, 228, 231, 1);
+    color: rgba(9, 9, 11, 1);
+    border-radius: 0.5rem;
+    padding-left: 1rem;
+    padding-right: 1rem;
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
+    transition: all 0.2s;
+  }
+  
+  .glass-input:focus {
+    outline: none;
+    border-color: rgba(16, 185, 129, 1);
+    box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.15);
+    background-color: rgba(255, 255, 255, 0.9);
+  }
+  
+  .dark .glass-input {
+    background-color: rgba(9, 9, 11, 0.4);
+    border: 1px solid rgba(39, 39, 42, 1);
+    color: rgba(244, 244, 245, 1);
+  }
+  
+  .dark .glass-input:focus {
+    border-color: rgba(16, 185, 129, 1);
+    box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.25);
+    background-color: rgba(9, 9, 11, 0.7);
+  }
+
+  .text-glow {
+    text-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
+  }
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(228, 228, 231, 1);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(161, 161, 170, 1);
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(39, 39, 42, 1);
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(63, 63, 70, 1);
+}
+
+body {
+  margin: 0;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Grid background pattern with subtle Emerald lines */
+.bg-grid-pattern {
+  background-size: 40px 40px;
+  background-image: 
+    linear-gradient(to right, rgba(16, 185, 129, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(16, 185, 129, 0.04) 1px, transparent 1px);
+}
+
+.dark .bg-grid-pattern {
+  background-image: 
+    linear-gradient(to right, rgba(16, 185, 129, 0.02) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(16, 185, 129, 0.02) 1px, transparent 1px);
+}

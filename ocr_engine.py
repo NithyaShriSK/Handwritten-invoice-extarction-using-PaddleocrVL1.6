@@ -212,7 +212,7 @@ def apply_causal_mask_patch():
 
 apply_causal_mask_patch()
 print("Loading model parameters onto Device...")
-model = AutoModel.from_pretrained(model_path, config=config, torch_dtype=torch.bfloat16, trust_remote_code=True).to(DEVICE).eval()
+model = AutoModel.from_pretrained(model_path, config=config, torch_dtype=torch.float16, trust_remote_code=True).to(DEVICE).eval()
 apply_causal_mask_patch()
 processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
 min_pix = processor.image_processor.min_pixels if hasattr(processor.image_processor, 'min_pixels') else 14
