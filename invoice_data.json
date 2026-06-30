@@ -1,25 +1,25 @@
 {
   "company_name": "NAGANNA RAAJAA SILK INDUSTRIES",
   "company_gst_no": "33DCRPK0145Q1Z5",
-  "invoice_number": "152",
-  "invoice_date": "24/11/2024",
+  "invoice_number": "166",
+  "invoice_date": "09/01/91",
   "state_code": "33",
   "vehicle_number": null,
-  "transportation_mode": null,
+  "transportation_mode": "E. mode (01) 638451",
   "products_list": [
     {
-      "product_name": "New Silk",
-      "hsn_code": "6002",
-      "quantity": 5.053,
-      "rate": 6550,
-      "amount": 28049
+      "product_name": "Silk Warp",
+      "hsn_code": "50024",
+      "quantity": 15.68,
+      "rate": 5600,
+      "amount": 87980.81
     }
   ],
   "cgst_amount": null,
-  "sgst_amount": null,
-  "igst_amount": null,
-  "total_amount": 28047,
-  "buyer_name": "SHREE KUMARAN SORCES",
-  "buyer_gst_no": "33AWEPN0221G1Z5",
-  "total_amount_in_words": "Twenty-eight thousand forty-seven Only"
+  "sgst_amount": 2195,
+  "igst_amount": 9195,
+  "total_amount": 93198,
+  "buyer_name": "Bzi Vasavi Silks",
+  "buyer_gst_no": null,
+  "total_amount_in_words": "Nine thousand two Only"
 }

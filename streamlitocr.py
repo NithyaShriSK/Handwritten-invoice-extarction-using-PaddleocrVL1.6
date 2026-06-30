@@ -70,37 +70,11 @@ def preprocess_image(image_path, scale_factor=3.0, save_path="preprocessed_full_
     return pil_img
 
 def get_smart_crops_from_pil(pil_image, out_dir="invoice_slices"):
-    """
-    Slices an invoice image into 4 non-overlapping sections based on table geometry:
-    1. Header / Buyer Info (Before the table)
-    2. Table Header + First 5 Rows
-    3. Remaining Rows of the Product Table
-    4. Tax Details, Totals, and Footer
-    
-    Robust against shadows, glare, and solid-colored table headers.
-    """
-    if not os.path.exists(out_dir):
-        os.makedirs(out_dir)
-
-    # 1. Convert PIL Image to OpenCV BGR format
     img = cv2.cvtColor(np.array(pil_image.convert("RGB")), cv2.COLOR_RGB2BGR)
     h, w = img.shape[:2]
-    
-    # 2. Convert to grayscale
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
-    # 3. FIX: Adaptive Gaussian Thresholding to eliminate lighting gradients/shadows
-    # Uses a local pixel window to isolate clean lines regardless of dark or bright zones.
-    binary_lines = cv2.adaptiveThreshold(
-        gray, 
-        255, 
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-        cv2.THRESH_BINARY_INV, 
-        21,  # Local pixel neighborhood size
-        4    # Constant subtracted to clean up fine noise
-    )
-    
-    # 4. Extract horizontal structural lines
+    binary_lines = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY_INV)[1]
     long_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (int(w * 0.45), 1))
     detected_long = cv2.morphologyEx(binary_lines, cv2.MORPH_OPEN, long_kernel)
     long_line_rows = np.where(np.sum(detected_long > 0, axis=1) > (w * 0.30))[0]
@@ -118,64 +92,50 @@ def get_smart_crops_from_pil(pil_image, out_dir="invoice_slices"):
             cuts.append(int(np.median(current_group)))
         return sorted(cuts)
 
-    raw_cuts = consolidate_lines(long_line_rows)
+    long_cuts = consolidate_lines(long_line_rows)
 
-    # 5. FIX: Filter out lines crowded too close together inside dark header blocks
-    distinct_cuts = []
-    if len(raw_cuts) > 0:
-        distinct_cuts.append(raw_cuts[0])
-        for cut in raw_cuts[1:]:
-            # Forces a logical vertical separation between grid lines (minimum 25 pixels)
-            if cut - distinct_cuts[-1] > 25:  
-                distinct_cuts.append(cut)
+    upper_candidates = [c for c in long_cuts if int(h * 0.15) < c < int(h * 0.45)]
+    table_top = min(upper_candidates) if upper_candidates else int(h * 0.32)
 
-    # 6. Locate Table Top Boundary
-    upper_candidates = [c for c in distinct_cuts if int(h * 0.15) < c < int(h * 0.35)]
-    table_top = min(upper_candidates) if upper_candidates else int(h * 0.28)
+    grid_end_candidates = [c for c in long_cuts if c > table_top and c < int(h * 0.78)]
+    base_reference_line = grid_end_candidates[-1] if grid_end_candidates else table_top + int(h * 0.30)
 
-    # 7. Locate Table Bottom Boundary
-    grid_end_candidates = [c for c in distinct_cuts if c > table_top and c < int(h * 0.78)]
-    table_bottom = grid_end_candidates[-1] if grid_end_candidates else int(h * 0.65)
+    scan_start = base_reference_line + 2
+    scan_end = min(h, scan_start + int(h * 0.12))
+    horizontal_density = np.sum(binary_lines > 0, axis=1)
+    
+    whitespace_anchor = None
+    for y in range(scan_start, scan_end):
+        if horizontal_density[y] < (w * 0.04):
+            whitespace_anchor = y
+            break
 
-    # 8. Compute 5-Row Cutoff step using clean, individual grid steps
-    post_top_lines = [c for c in distinct_cuts if c > table_top]
-    if len(post_top_lines) >= 2:
-        # Measure height of a clean single row step
-        estimated_row_height = post_top_lines[1] - post_top_lines[0]
-        # Table top line + 1 header step + 5 actual data steps = 6 total steps down
-        table_cutoff = table_top + (estimated_row_height * 6)
+    if whitespace_anchor:
+        table_bottom = whitespace_anchor + 2
     else:
-        # Proportional fallback fraction if lines are faint
-        table_cutoff = table_top + int((table_bottom - table_top) * 0.45)
+        table_bottom = base_reference_line + int(h * 0.055)
 
-    # Prevent cutoff boundary from overshooting the physical table bottom grid line
-    if table_cutoff >= table_bottom:
-        table_cutoff = table_top + ((table_bottom - table_top) // 2)
+    table_top = max(0, table_top - 6)
+    table_bottom = min(h - 10, table_bottom + 4)
 
-    # 9. Structure sequential layout boundaries for zero-overlap slicing
-    boundaries = [0, table_top, table_cutoff, table_bottom, h]
+    if table_top >= table_bottom:
+        table_bottom = table_top + int(h * 0.35)
+
+    boundaries = [0, table_top, table_bottom, h]
     crops = []
 
-    print(f"[Layout Telemetry] Slicing Boundaries for Image ({w}x{h}):\n"
-          f"  Slice 1 (Header Info): 0 -> {boundaries[1]}px\n"
-          f"  Slice 2 (Header + 5 Rows): {boundaries[1]} -> {boundaries[2]}px\n"
-          f"  Slice 3 (Remaining Table): {boundaries[2]} -> {boundaries[3]}px\n"
-          f"  Slice 4 (Tax & Totals): {boundaries[3]} -> {boundaries[4]}px")
+    print(f"[Layout Telemetry] Slicing Boundaries -> Header: 0-{table_top}px | Table: {table_top}-{table_bottom}px | Footer: {table_bottom}-{h}px")
 
-    # 10. Extract and save non-overlapping slices
     for i in range(len(boundaries) - 1):
         start = boundaries[i]
         end = boundaries[i + 1]
-        
-        # Guard against zero-width image slices
-        if (end - start) < 10: 
-            continue
+        if (end - start) < 30: continue
             
-        crop_img = img[start:end, :]
+        crop = img[start:end, :]
         filename = os.path.join(out_dir, f"slice_{i+1}.png")
-        cv2.imwrite(filename, crop_img)
+        cv2.imwrite(filename, crop)
         
-        crop_pil = Image.fromarray(cv2.cvtColor(crop_img, cv2.COLOR_BGR2RGB))
+        crop_pil = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
         crops.append(crop_pil)
         
     return crops
@@ -256,7 +216,20 @@ def consensus_gstin(candidates, default_state_code=None):
 def advanced_deterministic_extraction(text):
     clean_text = re.sub(r'</?[fluxe]cel>', ' ', text)
     lines = [line.strip() for line in clean_text.split("\n") if line.strip()]
-    extracted_company = "NAGANNA RAAJAA SILK INDUSTRIES" # Hardcode directly at base validation level
+    extracted_company = None
+    for line in lines:
+        if any(k in line.lower() for k in ["to.", "invoice no", "description", "s.no"]): break
+        clean_line_check = re.sub(r'[^A-Za-z\s]', '', line).strip()
+        if len(clean_line_check) > 4 and not any(k in line.lower() for k in ["invoice", "gstin", "tax", "date", "cell", "tele", "phone", "state"]):
+            extracted_company = re.sub(r'<.*?>', ' ', line.strip())
+            address_keywords = ["road", "street", "st.", "backside", "salai", "nagar", "district", "taluk", "pincode", "-"]
+            parts = extracted_company.split()
+            clean_company = []
+            for word in parts:
+                if word.lower() in address_keywords: break
+                clean_company.append(word)
+            extracted_company = " ".join(clean_company)
+            break
 
     extracted_inv_no = None
     inv_match = re.search(r"(?:Invoice\s+No\.|Inv\s+No\.|Invoice\s*#)\s*[:\-\s]\s*([A-Za-z0-9\-/]+)", clean_text, re.IGNORECASE)
@@ -270,7 +243,7 @@ def advanced_deterministic_extraction(text):
         extracted_date = f"{d.zfill(2)}/{m.zfill(2)}/{y}"
 
     extracted_buyer = None
-    buyer_match = re.search(r"To\.\s*[:\-]?\s*([\w\s&]+?)(?=\s*(?:Invoice|No\.|GSTIN|TAX|State|\n|$))", clean_text, re.IGNORECASE)
+    buyer_match = re.search(r"To\.\s*([\w\s&]+?)(?=\s*(?:Invoice|No\.|GSTIN|TAX|State|\n|$))", clean_text, re.IGNORECASE)
     if buyer_match:
         extracted_buyer = buyer_match.group(1).strip()
         extracted_buyer = re.sub(r'(?:Invoice|No\.|GSTIN).*', '', extracted_buyer, flags=re.I).strip()
@@ -279,36 +252,25 @@ def advanced_deterministic_extraction(text):
     extracted_words = None
     if words_match: extracted_words = words_match.group(1).replace("\n", " ").strip()
 
-    # Improved candidate gathering that tolerates broken spaces within individual words
     all_gst_candidates = []
-    # Normalize typical broken spacing sequences around text
-    normalized_spaces_text = re.sub(r'\s+', ' ', clean_text.upper())
-    
-    # Robust search looking specifically for 15-character configurations spanning across spaces
-    gst_pattern = r'\b([0-9]{2}[A-Z\s0-9]{10,14}[A-Z0-9])\b'
-    for match in re.findall(gst_pattern, normalized_spaces_text):
-        cleaned = re.sub(r'[^A-Z0-9]', '', match)
-        if len(cleaned) == 15 and cleaned not in all_gst_candidates:
-            all_gst_candidates.append(cleaned)
+    for word in re.split(r'[\s,:\n\t]+', clean_text.upper()):
+        cleaned = re.sub(r'[^A-Z0-9]', '', word)
+        if 14 <= len(cleaned) <= 16:
+            if any(c.isdigit() for c in cleaned) and any(c.isalpha() for c in cleaned) and cleaned not in all_gst_candidates:
+                all_gst_candidates.append(cleaned)
 
     company_gst, buyer_gst = None, None
-    supplier_match = re.search(r"GSTIN\s*:\s*([A-Z0-9\s]+?)\s*(?:TAX|INVOICE)", clean_text, re.IGNORECASE)
-    if supplier_match: 
-        company_gst = consensus_gstin([re.sub(r'[^A-Z0-9]', '', supplier_match.group(1).upper())], None)
-    elif len(all_gst_candidates) > 0: 
-        company_gst = consensus_gstin([all_gst_candidates[0]], None)
+    supplier_match = re.search(r"GSTIN\s*:\s*([A-Z0-9]+)\s*(?:TAX|INVOICE)", clean_text, re.IGNORECASE)
+    if supplier_match: company_gst = consensus_gstin([supplier_match.group(1).strip().upper()], None)
+    elif len(all_gst_candidates) > 0: company_gst = consensus_gstin([all_gst_candidates[0]], None)
 
-    # FIX: Updated regex pattern below to handle space separated text matching like "33AWE PN 0221G125"
-    buyer_match_section = re.search(r"GSTIN\s*:\s*([A-Z0-9\s]+?)\s*State\s*Code", clean_text, re.I)
+    buyer_match_section = re.search(r"GSTIN\s*:\s*([A-Z0-9]+)\s*State\s*Code", clean_text, re.I)
     if buyer_match_section:
-        buyer_gst_candidate = re.sub(r'[^A-Z0-9]', '', buyer_match_section.group(1).upper())
-        if buyer_gst_candidate != company_gst: 
-            buyer_gst = consensus_gstin([buyer_gst_candidate], None)
-            
+        buyer_gst_candidate = buyer_match_section.group(1).strip().upper()
+        if buyer_gst_candidate != company_gst: buyer_gst = consensus_gstin([buyer_gst_candidate], None)
     if not buyer_gst:
         distinct_candidates = [g for g in all_gst_candidates if g != company_gst]
-        if distinct_candidates: 
-            buyer_gst = consensus_gstin([distinct_candidates[0]], None)
+        if distinct_candidates: buyer_gst = consensus_gstin([distinct_candidates[0]], None)
 
     cgst_val, sgst_val, igst_val = None, None, None
     cgst_match = re.search(r"CGST\s*(?:\d+%\s*)?[:\-\s]+\s*([\d,]+\.\d{2})", clean_text, re.IGNORECASE)
@@ -319,6 +281,7 @@ def advanced_deterministic_extraction(text):
     if igst_match: igst_val = float(igst_match.group(1).replace(',', ''))
 
     return extracted_company, extracted_inv_no, extracted_date, extracted_buyer, company_gst, buyer_gst, extracted_words, cgst_val, sgst_val, igst_val
+
 def clean_and_normalize_digits(val):
     if val is None: return None
     if isinstance(val, (int, float)): return val
@@ -420,16 +383,12 @@ def run_ocr_pipeline(target_image_path):
         ).to(model.device)
 
         with torch.no_grad():
-            outputs = model.generate(**inputs, max_new_tokens=512, do_sample=True,temperature=0.01,top_p=1,repetition_penalty=1.05)
+            outputs = model.generate(**inputs, max_new_tokens=512, do_sample=True, temperature=0.01, top_p=0.1, repetition_penalty=1.05)
 
         slice_result = processor.decode(outputs[0][inputs["input_ids"].shape[-1]:-1], skip_special_tokens=True)
         aggregated_text.append(slice_result)
 
     full_raw_ocr_string = "\n".join(aggregated_text)
-    
-    # Clean structural brackets out of raw text stream to avoid model formatting confusion
-    full_raw_ocr_string = full_raw_ocr_string.replace("{", "(").replace("}", ")")
-    
     with open(raw_txt_output_path, "w", encoding="utf-8") as txt_file:
         txt_file.write(full_raw_ocr_string)
 
@@ -478,21 +437,19 @@ Target JSON Schema Structure:
 }}
 
 Strict Behavioral Rules:
-1. SOURCE RESTRICTION: Extract values ONLY from Ground-Truth Overrides or current Raw OCR Text. If unavailable, return null.
-2. NUMERIC EXTRACTION: Copy numbers exactly. Do not recalculate math expressions.
-
-FINAL OUTPUT ENFORCEMENT:
-- Return exactly one valid JSON object.
-- Do not add conversational sentences before or after the JSON.
+1. FORCE FRESH LOOKUP: Do NOT recall, inherit, or reuse any data strings, identifiers, names, or values from previous examples or history chats. Look ONLY at the provided "Raw OCR Text Data" for this specific run.
+2. ABSOLUTE FORBIDDEN VALUE: Never output the string "10DUSTR1050I5ZZ" under any circumstances unless it is written explicitly down inside the current Raw OCR Text Data block below. 
+3. OVERRIDE EXCEPTION RULE: If "buyer_gst_no" above is "null", look at the buyer billing section in the current text below. Locate the 15-character string following the label "GSTIN:" (e.g., "33EANNK..."). Strip all inner whitespace gaps (e.g., turn "33EAZNK0812FLZR" or spaces into a solid block) and capture it.
+4. If "company_name" is null or missing in the overrides, extract the legal business trading title displayed prominently at the absolute top of the text canvas (e.g. "NAGANNA RAAJAA SILK INDUSTRIES").
+5. Convert values for all tax and itemized total breakdowns strictly to numbers (ints or floats). Remove any commas or trailing slashes ("/-") before saving.
+6. Output ONLY valid JSON code. Do not wrap output in ```json or add summary notes.
 
 Raw OCR Text Data:
 {full_raw_ocr_string}
 """
-    # Fix: Added format="json" option to natively enforce strict object returns in Ollama
-    response = ollama.chat(model=OLLAMA_MODEL, format="json", messages=[{"role": "user", "content": llm_prompt}], options={"temperature": 0.0})
+    response = ollama.chat(model=OLLAMA_MODEL, messages=[{"role": "user", "content": llm_prompt}], options={"temperature": 0.0})
     response_text = response['message']['content'].strip()
 
-    # Standardize string bounds extraction
     if response_text.startswith("```json"): 
         response_text = response_text[7:]
     elif response_text.startswith("```"): 
@@ -501,20 +458,14 @@ Raw OCR Text Data:
         response_text = response_text[:-3]
     response_text = response_text.strip()
 
-    first_bracket = response_text.find('{')
-    last_bracket = response_text.rfind('}')
-    
-    if first_bracket != -1 and last_bracket != -1 and last_bracket > first_bracket:
-        response_text = response_text[first_bracket:last_bracket + 1]
+    json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+    if json_match: 
+        response_text = json_match.group(0)
     else: 
-        raise ValueError("No valid JSON structure found in LLaMA response wrapper.")
-        
-    print("================ LLM RAW OUTPUT ================")
-    print(response_text)  # Fix: Renamed llm_response to response_text here
-    print("================================================")
+        raise ValueError("No valid JSON found in LLaMA response")
 
     parsed_json = json.loads(response_text)
-    
+    if p_company: parsed_json["company_name"] = p_company
     if p_inv: parsed_json["invoice_number"] = p_inv
     if p_date: parsed_json["invoice_date"] = p_date
     if p_buyer: parsed_json["buyer_name"] = p_buyer
@@ -531,7 +482,6 @@ Raw OCR Text Data:
     parsed_json = process_minor_corrections(parsed_json)
     parsed_json = normalize_all_fields(parsed_json)
     parsed_json["total_amount_in_words"] = correct_amount_words_with_llm(parsed_json.get("total_amount_in_words"))
-    parsed_json["company_name"] = "NAGANNA RAAJAA SILK INDUSTRIES"
         
     with open(final_json_output_path, "w", encoding="utf-8") as json_file:
         json.dump(parsed_json, json_file, indent=2, ensure_ascii=False)
@@ -541,4 +491,5 @@ Raw OCR Text Data:
     return parsed_json
 
 if __name__ == "__main__":
+    # Retains backward-compatibility for headless/shell terminal usage
     run_ocr_pipeline(image_path)
