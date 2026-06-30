@@ -253,7 +253,7 @@ const ReportHistory = () => {
 
                       {/* Type */}
                       <td className="py-4 px-6 text-xs font-semibold">
-                        <span className="px-2.5 py-1 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-full border border-slate-200 dark:border-slate-700/50">
+                        <span className="inline-block whitespace-nowrap min-w-[120px] text-center px-2.5 py-1 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-full border border-slate-200 dark:border-slate-700/50">
                           {getReportTypeLabel(r.report_type)}
                         </span>
                       </td>

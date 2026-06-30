@@ -98,8 +98,8 @@ const AdminDashboard = () => {
           </div>
           <div className="mt-4">
             <h3 className="text-3xl font-extrabold text-slate-800 dark:text-white">{data.total_users}</h3>
-            <p className="text-xs text-slate-400 mt-1 font-medium flex items-center gap-1">
-              <span className="text-emerald-500 font-bold">{data.active_users}</span> active sessions enabled
+            <p className="text-xs text-slate-400 mt-1 font-medium">
+              active sessions enabled
             </p>
           </div>
         </div>
@@ -126,8 +126,8 @@ const AdminDashboard = () => {
           </div>
           <div className="mt-4">
             <h3 className="text-3xl font-extrabold text-slate-800 dark:text-white">{data.invoices_uploaded_today}</h3>
-            <p className="text-xs text-slate-400 mt-1 font-medium flex items-center gap-1">
-              <span className="text-emerald-500 font-bold">+{data.invoices_uploaded_this_month}</span> uploaded this month
+            <p className="text-xs text-slate-400 mt-1 font-medium">
+              uploaded this month
             </p>
           </div>
         </div>
@@ -135,13 +135,13 @@ const AdminDashboard = () => {
         {/* Overall Correction Rate */}
         <div className="glass-card p-6 border border-slate-200 dark:border-slate-800 rounded-2xl flex flex-col justify-between">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">System Correction Rate</span>
+            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Needs Correction</span>
             <span className="p-2 bg-amber-500/10 text-amber-600 rounded-lg"><Percent size={18} /></span>
           </div>
           <div className="mt-4">
             <h3 className="text-3xl font-extrabold text-slate-800 dark:text-white">{data.correction_rate}%</h3>
             <p className="text-xs text-slate-400 mt-1 font-medium">
-              Average across users: <strong className="text-emerald-600 dark:text-emerald-400">{data.average_correction_rate}%</strong>
+              Requires manual edits
             </p>
           </div>
         </div>
@@ -149,13 +149,13 @@ const AdminDashboard = () => {
         {/* OCR Acceptance Rate */}
         <div className="glass-card p-6 border border-slate-200 dark:border-slate-800 rounded-2xl flex flex-col justify-between">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">OCR Acceptance Rate</span>
+            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Accepted As Extracted</span>
             <span className="p-2 bg-emerald-500/10 text-emerald-600 rounded-lg"><TrendingUp size={18} /></span>
           </div>
           <div className="mt-4">
             <h3 className="text-3xl font-extrabold text-slate-800 dark:text-white">{data.acceptance_rate}%</h3>
             <p className="text-xs text-slate-400 mt-1 font-medium">
-              No manual adjustments required
+              No manual changes
             </p>
           </div>
         </div>

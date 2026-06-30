@@ -140,34 +140,10 @@ export const ExtractInvoice = () => {
       subtotal += parseFloat(prod.amount) || 0;
     });
 
-    const compGst = watch("company_gst_no") || "";
-    const buyerGst = watch("buyer_gst_no") || "";
-    const compState = compGst.replace(/\s/g, "").substring(0, 2);
-    const buyerState = buyerGst.replace(/\s/g, "").substring(0, 2);
+    const cgst = parseFloat(watch("cgst_amount")) || 0;
+    const sgst = parseFloat(watch("sgst_amount")) || 0;
+    const igst = parseFloat(watch("igst_amount")) || 0;
 
-    let cgst = 0;
-    let sgst = 0;
-    let igst = 0;
-
-    if (compState && buyerState) {
-      if (compState === buyerState) {
-        cgst = Math.round(subtotal * 0.09 * 100) / 100;
-        sgst = Math.round(subtotal * 0.09 * 100) / 100;
-        igst = 0;
-      } else {
-        cgst = 0;
-        sgst = 0;
-        igst = Math.round(subtotal * 0.18 * 100) / 100;
-      }
-    } else {
-      cgst = Math.round(subtotal * 0.09 * 100) / 100;
-      sgst = Math.round(subtotal * 0.09 * 100) / 100;
-      igst = 0;
-    }
-
-    setValue("cgst_amount", cgst);
-    setValue("sgst_amount", sgst);
-    setValue("igst_amount", igst);
     setValue("total_amount", Math.round((subtotal + cgst + sgst + igst) * 100) / 100);
   };
 
@@ -624,15 +600,7 @@ export const ExtractInvoice = () => {
                     />
                   </div>
 
-                  {/* Amount in words */}
-                  <div className="flex flex-col gap-1.5 sm:col-span-2">
-                    <label className="text-xs font-semibold text-slate-500">Total Amount in Words</label>
-                    <input
-                      type="text"
-                      {...register("total_amount_in_words")}
-                      className="glass-input text-xs"
-                    />
-                  </div>
+
                 </div>
               </div>
 
