@@ -1,0 +1,16 @@
+.git
+.vscode
+.idea
+__pycache__
+*.pyc
+*.pyo
+*.log
+.pytest_cache
+venv
+.venv
+node_modules
+frontend/node_modules
+dist
+build
+.env
+.env.local

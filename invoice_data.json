@@ -1,46 +1,25 @@
 {
-  "company_name": "NAGANNA RAAJAA SILK INDUSTRIES 15/4 A, Radio Room Backside, Thottathusalai, Doddampalayam-638451",
+  "company_name": "NAGANNA RAAJAA SILK INDUSTRIES",
   "company_gst_no": "33DCRPK0145Q1Z5",
-<<<<<<< HEAD
-  "invoice_number": "166",
-  "invoice_date": "09/01/91",
-=======
-  "invoice_number": "157",
-  "invoice_date": "08/12/2024",
->>>>>>> origin/frontend
+  "invoice_number": "152",
+  "invoice_date": "24/10/2024",
   "state_code": "33",
   "vehicle_number": null,
-  "transportation_mode": "E. mode (01) 638451",
+  "transportation_mode": null,
   "products_list": [
     {
-      "product_name": "Silk Warp",
-<<<<<<< HEAD
-      "hsn_code": "50024",
-      "quantity": 15.68,
-      "rate": 5600,
-      "amount": 87980.81
+      "product_name": "Raw Silk",
+      "hsn_code": "6002",
+      "quantity": 5.053,
+      "rate": 6560,
+      "amount": 28.04
     }
   ],
   "cgst_amount": null,
-  "sgst_amount": 2195,
-  "igst_amount": 9195,
-  "total_amount": 93198,
-  "buyer_name": "Bzi Vasavi Silks",
-  "buyer_gst_no": null,
-  "total_amount_in_words": "Nine thousand two Only"
-=======
-      "hsn_code": "5004",
-      "quantity": 24.0,
-      "rate": 5500,
-      "amount": 136400
-    }
-  ],
-  "cgst_amount": 3456.875,
-  "sgst_amount": 3456.875,
-  "igst_amount": 34375,
-  "total_amount": 142251,
-  "buyer_name": null,
-  "buyer_gst_no": "33DLKPS9750I1ZZ",
-  "total_amount_in_words": "One hundred thousand thirty-six hundred and four Only. Only"
->>>>>>> origin/frontend
+  "sgst_amount": null,
+  "igst_amount": null,
+  "total_amount": 28047.1,
+  "buyer_name": "SHREE KUMARAN SARCES",
+  "buyer_gst_no": "53AWEPN0221G1Z5",
+  "total_amount_in_words": "Twenty-eight thousand forty-seven Only"
 }

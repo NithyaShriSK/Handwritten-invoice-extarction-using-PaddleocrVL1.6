@@ -32,8 +32,10 @@ app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MB limit
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg"}
 
-# Ensure uploads directory exists
+# Ensure uploads, reports, and invoice_slices directories exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(os.environ.get("REPORTS_DIRECTORY", "reports"), exist_ok=True)
+os.makedirs("invoice_slices", exist_ok=True)
 
 # MongoDB Connection
 MONGO_URI = os.getenv("MONGODB_URI")
