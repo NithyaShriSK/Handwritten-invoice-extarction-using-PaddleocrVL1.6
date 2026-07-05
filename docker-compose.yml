@@ -1,0 +1,99 @@
+services:
+  mongodb:
+    image: mongo:latest
+    container_name: invoice_mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - invoice_net
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: invoice_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - invoice_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  backend:
+    build: .
+    container_name: invoice_backend
+    ports:
+      - "5000:5000"
+    volumes:
+      - .:/app
+      - hf_cache:/root/.cache/huggingface
+      - uploads_data:/app/uploads
+      - reports_data:/app/reports
+      - invoice_slices_data:/app/invoice_slices
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/invoice_ocr
+      - OLLAMA_HOST=http://ollama:11434
+      - HF_HOME=/root/.cache/huggingface
+    env_file:
+      - .env
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    networks:
+      - invoice_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: invoice_frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_URL=http://localhost:5000
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - invoice_net
+
+volumes:
+  mongo_data:
+  ollama_data:
+  hf_cache:
+  uploads_data:
+  reports_data:
+  invoice_slices_data:
+
+networks:
+  invoice_net:
+    driver: bridge

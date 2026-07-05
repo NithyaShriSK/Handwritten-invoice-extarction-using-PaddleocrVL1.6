@@ -46,7 +46,8 @@ def generate_text_summary(intent, analytics_data):
     
     # 3. Call local Ollama
     try:
-        url = "http://localhost:11434/api/generate"
+        ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+        url = f"{ollama_host}/api/generate"
         payload = {
             "model": model,
             "prompt": prompt,

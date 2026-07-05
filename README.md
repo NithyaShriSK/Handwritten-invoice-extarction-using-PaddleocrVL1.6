@@ -236,7 +236,69 @@ ollama list
 
 ---
 
-## 7. User Roles & Permissions
+## 7. Running with Docker
+
+InvoiceAI can be completely containerized and run locally using Docker and Docker Compose. This simplifies environment setup by bundling the React Frontend, Flask Backend, MongoDB database, and Ollama service together.
+
+### 1. Prerequisites
+- **Docker Desktop** installed on your host system.
+- **NVIDIA GPU Support (Optional for GPU Acceleration):**
+  - Install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+  - Ensure Docker Desktop has GPU support enabled (Settings > Resources > WSL integration / Docker engine configuration).
+
+### 2. Services Overview
+The `docker-compose.yml` configures the following containers:
+- **`frontend` (Node 20):** Dev server hosting the React client app, exposed at `http://localhost:5173`.
+- **`backend` (Python 3.10-slim):** Flask REST API backend, exposed at `http://localhost:5000`. Runs CPU-based or GPU-accelerated OCR model processing.
+- **`mongodb` (Mongo Latest):** Database engine, exposed at `http://localhost:27017` with persistent volumes.
+- **`ollama` (Ollama Latest):** Running the local LLaMA3 LLM for post-processing and text summarization, exposed at `http://localhost:11434`.
+
+### 3. GPU Acceleration & CPU Fallback
+- The Docker Compose configuration includes GPU resource reservations.
+- If NVIDIA GPU capabilities are detected, the backend container automatically passes CUDA access to PyTorch.
+- If no GPU is available, the system automatically falls back to CPU execution using OpenMP (`libgomp1`) without code changes.
+
+### 4. Model Persistence & Cache Volumes
+To avoid re-downloading large AI models on container restarts, persistent named Docker volumes are configured:
+- **`hf_cache`:** Caches the `PaddlePaddle/PaddleOCR-VL-1.6` Hugging Face model parameters.
+- **`ollama_data`:** Caches downloaded Ollama models (e.g. `llama3`).
+- **`mongo_data`:** Stores MongoDB data collections.
+- **`uploads_data`, `reports_data`, `invoice_slices_data`:** Stores user-uploaded media files and reports.
+
+### 5. Running the Application
+
+Ensure you have created a `.env` file in the project root containing your API configurations (e.g., `GOOGLE_CLIENT_ID`, `JWT_SECRET_KEY`).
+
+#### Build the Docker Images
+```bash
+docker compose build
+```
+
+#### Start All Services (Detached Mode)
+```bash
+docker compose up -d
+```
+
+#### Rebuild and Start Services
+```bash
+docker compose up --build
+```
+
+#### Stop Services and Remove Containers
+```bash
+docker compose down
+```
+
+#### Confirming Service Status
+The containers use automated health checks. You can check the health status by running:
+```bash
+docker compose ps
+```
+Once all services show `(healthy)`, you can access the frontend in your browser at `http://localhost:5173`.
+
+---
+
+## 8. User Roles & Permissions
 
 | Action / Permission | Standard User (`role = "user"`) | Administrator (`role = "admin"`) |
 | :--- | :---: | :---: |
@@ -251,7 +313,7 @@ ollama list
 
 ---
 
-## 8. API Endpoints
+## 9. API Endpoints
 
 ### Authentication
 * `POST /api/auth/google` - Exchanges Google OAuth credential token for JWT.
@@ -283,7 +345,7 @@ ollama list
 
 ---
 
-## 9. Interface Placeholders
+## 10. Interface Placeholders
 
 ### Login Page
 `[Screenshot Placeholder: Secure Google OAuth and email-based login screen with high-contrast emerald colors]`
@@ -308,7 +370,7 @@ ollama list
 
 ---
 
-## 10. Security Features
+## 11. Security Features
 
 * **JWT Verification:** All protected API routes require a valid Bearer JWT. Session expiry is strictly enforced.
 * **Role-Based Access Control (RBAC):** Admin routes are blocked from standard users at the backend level.
@@ -319,7 +381,7 @@ ollama list
 
 ---
 
-## 11. Future Enhancements
+## 12. Future Enhancements
 
 * **Automated Scheduler:** Run weekly or monthly automated reports and deliver them straight to user emails.
 * **Email Delivery:** Send invoice copies and payment reminders to clients directly from the application.
@@ -329,7 +391,7 @@ ollama list
 
 ---
 
-## 12. Authors & License
+## 13. Authors & License
 
 ### Authors
 * **Boomika S** - [GitHub](https://github.com/boomiikas) | [LinkedIn](https://www.linkedin.com/in/boomika-s-981b55311/)
@@ -337,6 +399,6 @@ ollama list
 
 ---
 
-## 13. License
+## 14. License
 
 Distributed under the MIT License. See `LICENSE` for details.
