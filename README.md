@@ -396,9 +396,3 @@ Once all services show `(healthy)`, you can access the frontend in your browser 
 ### Authors
 * **Boomika S** - [GitHub](https://github.com/boomiikas) | [LinkedIn](https://www.linkedin.com/in/boomika-s-981b55311/)
 * **Nithya Shri S K** - [GitHub](https://github.com/NithyaShriSK) | [LinkedIn](https://www.linkedin.com/in/nithya-shri-s-k-670531353/)
-
----
-
-## 14. License
-
-Distributed under the MIT License. See `LICENSE` for details.
