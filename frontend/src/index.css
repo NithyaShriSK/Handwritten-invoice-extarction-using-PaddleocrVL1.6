@@ -1,75 +1,89 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer utilities {
-  /* Glassmorphism custom classes with Emerald accents */
+  /* Elegant Luxury Glassmorphism card elements for Textile & Silk theme */
   .glass-card {
-    background-color: rgba(255, 255, 255, 0.75);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.05);
+    background-color: rgba(255, 255, 255, 0.78);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(224, 231, 255, 0.5);
+    box-shadow: 0 15px 35px -10px rgba(79, 70, 229, 0.05), 0 5px 15px -5px rgba(0, 0, 0, 0.02);
   }
   
   .dark .glass-card {
-    background-color: rgba(30, 41, 59, 0.75);
-    border: 1px solid rgba(51, 65, 85, 0.4);
-    box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.7);
+    background-color: rgba(15, 23, 42, 0.78);
+    border: 1px solid rgba(79, 70, 229, 0.2);
+    box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.5);
   }
   
   .glass-card-hover {
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
   }
   .glass-card-hover:hover {
     background-color: rgba(255, 255, 255, 0.95);
-    border-color: rgba(16, 185, 129, 0.35);
+    border-color: rgba(139, 92, 246, 0.4);
+    transform: translateY(-2px);
+    box-shadow: 0 20px 40px -10px rgba(139, 92, 246, 0.1), 0 5px 15px -5px rgba(0, 0, 0, 0.02);
   }
   
   .dark .glass-card-hover:hover {
     background-color: rgba(30, 41, 59, 0.85);
-    border-color: rgba(16, 185, 129, 0.45);
+    border-color: rgba(139, 92, 246, 0.5);
+    box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.7), 0 0 15px -2px rgba(139, 92, 246, 0.15);
   }
   
   .glass-input {
-    background-color: rgba(255, 255, 255, 0.5);
+    background-color: rgba(255, 255, 255, 0.6);
     backdrop-filter: blur(4px);
     -webkit-backdrop-filter: blur(4px);
-    border: 1px solid rgba(228, 228, 231, 1);
-    color: rgba(9, 9, 11, 1);
-    border-radius: 0.5rem;
+    border: 1px solid rgba(226, 232, 240, 1);
+    color: rgba(15, 23, 42, 1);
+    border-radius: 0.75rem;
     padding-left: 1rem;
     padding-right: 1rem;
-    padding-top: 0.5rem;
-    padding-bottom: 0.5rem;
-    transition: all 0.2s;
+    padding-top: 0.6rem;
+    padding-bottom: 0.6rem;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   }
   
   .glass-input:focus {
     outline: none;
-    border-color: rgba(16, 185, 129, 1);
-    box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.15);
-    background-color: rgba(255, 255, 255, 0.9);
+    border-color: rgba(139, 92, 246, 1);
+    box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.12);
+    background-color: rgba(255, 255, 255, 0.95);
   }
   
   .dark .glass-input {
-    background-color: rgba(9, 9, 11, 0.4);
-    border: 1px solid rgba(39, 39, 42, 1);
-    color: rgba(244, 244, 245, 1);
+    background-color: rgba(15, 23, 42, 0.4);
+    border: 1px solid rgba(51, 65, 85, 1);
+    color: rgba(241, 245, 249, 1);
   }
   
   .dark .glass-input:focus {
-    border-color: rgba(16, 185, 129, 1);
-    box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.25);
-    background-color: rgba(9, 9, 11, 0.7);
+    border-color: rgba(139, 92, 246, 1);
+    box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.25);
+    background-color: rgba(15, 23, 42, 0.7);
   }
 
   .text-glow {
-    text-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
+    text-shadow: 0 0 15px rgba(139, 92, 246, 0.3);
+  }
+  
+  /* Decorative silk brand gold lines */
+  .border-gold {
+    border-color: #D97706;
+  }
+  
+  .text-gold {
+    color: #D97706;
   }
 }
 
-/* Custom Scrollbars */
+/* Custom Scrollbars matching Violet Silk Theme */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -78,37 +92,61 @@
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(228, 228, 231, 1);
+  background: rgba(203, 213, 225, 1);
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(161, 161, 170, 1);
+  background: rgba(139, 92, 246, 0.6);
 }
 
 .dark ::-webkit-scrollbar-thumb {
-  background: rgba(39, 39, 42, 1);
+  background: rgba(51, 65, 85, 1);
 }
 .dark ::-webkit-scrollbar-thumb:hover {
-  background: rgba(63, 63, 70, 1);
+  background: rgba(139, 92, 246, 0.5);
 }
 
 body {
   margin: 0;
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: 'Outfit', 'Inter', system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Grid background pattern with subtle Emerald lines */
+h1, h2, h3, .font-serif-header {
+  font-family: 'Playfair Display', 'Outfit', serif;
+}
+
+/* Beautiful grid background with soft silk fabric overlay & rich ambient glows */
 .bg-grid-pattern {
-  background-size: 40px 40px;
+  background-size: 50px 50px;
   background-image: 
-    linear-gradient(to right, rgba(16, 185, 129, 0.04) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(16, 185, 129, 0.04) 1px, transparent 1px);
+    linear-gradient(to right, rgba(139, 92, 246, 0.03) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(139, 92, 246, 0.03) 1px, transparent 1px);
+  background-color: #FAF9F6; /* Premium Alabaster fabric white */
+  position: relative;
+}
+
+.bg-grid-pattern::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: 
+    radial-gradient(circle at 80% 15%, rgba(245, 158, 11, 0.07), transparent 35%),
+    radial-gradient(circle at 15% 85%, rgba(236, 72, 153, 0.05), transparent 45%);
+  pointer-events: none;
+  z-index: 0;
 }
 
 .dark .bg-grid-pattern {
   background-image: 
-    linear-gradient(to right, rgba(16, 185, 129, 0.02) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(16, 185, 129, 0.02) 1px, transparent 1px);
+    linear-gradient(to right, rgba(139, 92, 246, 0.015) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(139, 92, 246, 0.015) 1px, transparent 1px);
+  background-color: #0B0F19; /* Deeper slate dark */
+}
+
+.dark .bg-grid-pattern::before {
+  background: 
+    radial-gradient(circle at 80% 15%, rgba(245, 158, 11, 0.03), transparent 35%),
+    radial-gradient(circle at 15% 85%, rgba(236, 72, 153, 0.03), transparent 45%);
 }

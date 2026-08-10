@@ -13,8 +13,8 @@ import Dashboard from "./pages/Dashboard";
 import ExtractInvoice from "./pages/ExtractInvoice";
 import InvoiceHistory from "./pages/InvoiceHistory";
 import InvoiceDetail from "./pages/InvoiceDetail";
-import Analytics from "./pages/Analytics";
 import ReportHistory from "./pages/ReportHistory";
+import Billing from "./pages/Billing";
 
 // Admin Pages
 import AdminDashboard from "./pages/AdminDashboard";
@@ -64,6 +64,16 @@ function App() {
           }
         />
         <Route
+          path="/billing"
+          element={
+            <ProtectedRoute requiredRole="user">
+              <Layout>
+                <Billing />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/extract"
           element={
             <ProtectedRoute requiredRole="user">
@@ -89,16 +99,6 @@ function App() {
             <ProtectedRoute requiredRole="user">
               <Layout>
                 <InvoiceDetail />
-              </Layout>
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/analytics"
-          element={
-            <ProtectedRoute requiredRole="user">
-              <Layout>
-                <Analytics />
               </Layout>
             </ProtectedRoute>
           }

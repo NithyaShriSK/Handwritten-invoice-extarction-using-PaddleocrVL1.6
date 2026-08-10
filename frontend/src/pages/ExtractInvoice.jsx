@@ -72,6 +72,9 @@ export const ExtractInvoice = () => {
   const [originalOcrData, setOriginalOcrData] = useState(null);
   const [showDuplicateModal, setShowDuplicateModal] = useState(false);
   const [pendingSavePayload, setPendingSavePayload] = useState(null);
+  const [showBulkDuplicateModal, setShowBulkDuplicateModal] = useState(false);
+  const [pendingBulkSaves, setPendingBulkSaves] = useState([]);
+  const [savingAll, setSavingAll] = useState(false);
 
   // Multi-page states
   const [isMultipage, setIsMultipage] = useState(false);
@@ -472,6 +475,117 @@ export const ExtractInvoice = () => {
     if (pendingSavePayload) {
       saveInvoiceToDb(pendingSavePayload, true);
     }
+  };
+
+  const handleSaveAllPages = async () => {
+    // 1. Sync current page form inputs
+    const currentValues = getValues();
+    const allForms = [...pagesFormData];
+    allForms[currentPageIndex] = currentValues;
+    setPagesFormData(allForms);
+
+    setSavingAll(true);
+    let savedCount = 0;
+    let failedCount = 0;
+    let duplicateWarnings = [];
+
+    // Loop through each page and submit
+    for (let i = 0; i < pages.length; i++) {
+      const pageData = allForms[i];
+      const pageOriginal = sanitizeInvoiceData(pages[i].ocr_result);
+      const pageImage = pages[i].image_path;
+
+      const finalEditedData = {
+        ...pageData,
+        source_filename: file?.name || "unknown",
+        source_page_number: i + 1,
+        total_pages: pages.length,
+        document_type: file?.name?.toLowerCase().endsWith(".pdf") ? "pdf" : "image"
+      };
+
+      try {
+        const response = await api.saveInvoice(pageOriginal, finalEditedData, pageImage, false);
+        if (response.success) {
+          savedCount++;
+        } else {
+          failedCount++;
+        }
+      } catch (err) {
+        if (err.response?.status === 409) {
+          duplicateWarnings.push({ index: i, original: pageOriginal, edited: finalEditedData, image: pageImage });
+        } else {
+          failedCount++;
+        }
+      }
+    }
+
+    setSavingAll(false);
+
+    if (savedCount > 0) {
+      toast.success(`Successfully saved ${savedCount} pages to database!`);
+    }
+    if (failedCount > 0) {
+      toast.error(`Failed to save ${failedCount} pages.`);
+    }
+
+    if (duplicateWarnings.length > 0) {
+      setPendingBulkSaves(duplicateWarnings);
+      setShowBulkDuplicateModal(true);
+      
+      // Filter the pages/forms states to only keep the duplicate warning ones
+      const remainingPages = [];
+      const remainingForms = [];
+      for (let i = 0; i < pages.length; i++) {
+        if (duplicateWarnings.some(w => w.index === i)) {
+          remainingPages.push(pages[i]);
+          remainingForms.push(allForms[i]);
+        }
+      }
+      setPages(remainingPages);
+      setPagesFormData(remainingForms);
+      setCurrentPageIndex(0);
+      setImageUrl(remainingPages[0].image_path);
+      setOriginalOcrData(sanitizeInvoiceData(remainingPages[0].ocr_result));
+      reset(remainingForms[0]);
+    }
+
+    if (duplicateWarnings.length === 0 && failedCount === 0) {
+      localStorage.removeItem("invoice_draft");
+      handleReset();
+    }
+  };
+
+  const handleContinueBulkSave = async () => {
+    setShowBulkDuplicateModal(false);
+    setSavingAll(true);
+    let savedCount = 0;
+    let failedCount = 0;
+
+    for (let i = 0; i < pendingBulkSaves.length; i++) {
+      const item = pendingBulkSaves[i];
+      try {
+        const response = await api.saveInvoice(item.original, item.edited, item.image, true); // force_save = true (overwrites)
+        if (response.success) {
+          savedCount++;
+        } else {
+          failedCount++;
+        }
+      } catch (err) {
+        failedCount++;
+      }
+    }
+
+    setSavingAll(false);
+
+    if (savedCount > 0) {
+      toast.success(`Successfully overwrote and saved ${savedCount} pages!`);
+    }
+    if (failedCount > 0) {
+      toast.error(`Failed to save ${failedCount} pages.`);
+    }
+
+    localStorage.removeItem("invoice_draft");
+    handleReset();
   };
 
   const handleReset = () => {
@@ -1001,8 +1115,20 @@ export const ExtractInvoice = () => {
                     className="flex items-center gap-1.5 bg-brand-500 hover:bg-brand-600 text-white font-semibold text-xs px-4 py-2.5 rounded-xl shadow-lg shadow-brand-500/10 transition-all duration-200"
                   >
                     <Save size={14} />
-                    <span>Save to DB</span>
+                    <span>Save Page</span>
                   </button>
+
+                  {isMultipage && pages.length > 0 && (
+                    <button
+                      type="button"
+                      disabled={savingAll}
+                      onClick={handleSaveAllPages}
+                      className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs px-4 py-2.5 rounded-xl shadow-lg shadow-indigo-600/10 transition-all duration-200 disabled:opacity-50"
+                    >
+                      <Save size={14} />
+                      <span>{savingAll ? "Saving All Pages..." : "Save All Pages"}</span>
+                    </button>
+                  )}
 
                   <button
                     type="button"
@@ -1051,10 +1177,10 @@ export const ExtractInvoice = () => {
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 max-w-md w-full shadow-2xl animate-scale-up space-y-4">
             <div className="flex items-center gap-3 text-amber-500">
               <AlertTriangle size={24} className="shrink-0 animate-bounce" />
-              <h4 className="font-extrabold text-md text-slate-800 dark:text-white">Duplicate Detection Warning</h4>
+              <h4 className="font-extrabold text-md text-slate-800 dark:text-white">Invoice Already Exists</h4>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-              An invoice matching the vendor GST No and invoice number you corrected already exists in the system. Continuing will create a duplicate record.
+              An invoice with the same Invoice Number and vendor GST No already exists in the system. Do you want to overwrite the existing bill with this new data? Or skip saving?
             </p>
             <div className="flex items-center justify-end gap-3 pt-2">
               <button
@@ -1062,14 +1188,57 @@ export const ExtractInvoice = () => {
                 onClick={() => setShowDuplicateModal(false)}
                 className="px-4 py-2 text-xs font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg border border-transparent transition-all"
               >
-                Cancel Save
+                Skip / Cancel
               </button>
               <button
                 type="button"
                 onClick={handleContinueSave}
-                className="px-4 py-2 text-xs font-bold bg-brand-500 hover:bg-brand-600 text-white rounded-lg transition-all shadow-md shadow-brand-500/10"
+                className="px-4 py-2 text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-all shadow-md shadow-indigo-600/10"
               >
-                Continue Save
+                Yes, Overwrite
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Bulk Duplicate Warning Dialog Modal */}
+      {showBulkDuplicateModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 max-w-md w-full shadow-2xl animate-scale-up space-y-4">
+            <div className="flex items-center gap-3 text-amber-500">
+              <AlertTriangle size={24} className="shrink-0 animate-bounce" />
+              <h4 className="font-extrabold text-md text-slate-800 dark:text-white">Bulk Duplicate Warning</h4>
+            </div>
+            <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+              Some of the pages in this document have invoice numbers that already exist in the system:
+            </p>
+            <ul className="text-xs text-slate-500 dark:text-slate-400 space-y-1 list-disc list-inside bg-slate-50 dark:bg-slate-950 p-2.5 rounded-lg border border-slate-100 dark:border-slate-800">
+              {pendingBulkSaves.map((w, idx) => (
+                <li key={idx}>
+                  Page {w.index + 1}: Invoice No <strong>{w.edited.invoice_number}</strong>
+                </li>
+              ))}
+            </ul>
+            <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed font-semibold">
+              Do you want to overwrite the existing invoices in the database with these new page details? Or skip saving?
+            </p>
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowBulkDuplicateModal(false);
+                  toast.info("Bulk save cancelled. Duplicate pages remain in queue for manual corrections.");
+                }}
+                className="px-4 py-2 text-xs font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg border border-transparent transition-all"
+              >
+                Skip / Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleContinueBulkSave}
+                className="px-4 py-2 text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-all shadow-md shadow-indigo-600/10"
+              >
+                Yes, Overwrite All
               </button>
             </div>
           </div>

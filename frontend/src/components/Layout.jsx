@@ -50,9 +50,9 @@ export const Layout = ({ children }) => {
   // Sync route path to navigation items
   const menuItems = [
     { name: "Dashboard", path: "/dashboard", icon: LayoutDashboard },
-    { name: "Extract Invoice", path: "/extract", icon: FileText },
+    { name: "New Billing", path: "/billing", icon: FileText },
+    { name: "Extract Invoice", path: "/extract", icon: Sparkles },
     { name: "Invoice History", path: "/history", icon: History },
-    { name: "Analytics", path: "/analytics", icon: BarChart3 },
     { name: "Reports", path: "/reports", icon: FileSpreadsheet },
   ];
 

@@ -796,14 +796,16 @@ def save_invoice():
         gst_no = edited.get("company_gst_no", "").strip() if edited.get("company_gst_no") else ""
         inv_no = edited.get("invoice_number", "").strip() if edited.get("invoice_number") else ""
         
-        if gst_no and inv_no and not force_save:
+        existing = None
+        if gst_no and inv_no:
             existing = collection.find_one({
                 "edited_invoice_data.company_gst_no": gst_no,
                 "edited_invoice_data.invoice_number": inv_no,
                 "is_deleted": {"$ne": True}
             })
-            if existing:
-                return make_failure("Invoice may already exist.", errors=["DUPLICATE_WARNING"], status_code=409)
+            
+        if existing and not force_save:
+            return make_failure("Invoice may already exist.", errors=["DUPLICATE_WARNING"], status_code=409)
                 
         now = datetime.utcnow()
         now_str = now.isoformat() + "Z"
@@ -851,19 +853,27 @@ def save_invoice():
             "updated_at": now
         }
         
-        print("[PAGE SAVE DEBUG] Document to insert in MongoDB:")
-        print(json.dumps(document, indent=2, default=str))
-        
-        result = collection.insert_one(document)
-        document["_id"] = str(result.inserted_id)
-        
+        if existing and force_save:
+            document["_id"] = existing["_id"]
+            document["uploaded_at"] = existing.get("uploaded_at", now_str)
+            document["created_at"] = existing.get("created_at", now)
+            collection.replace_one({"_id": existing["_id"]}, document)
+            invoice_id = existing["_id"]
+            document["_id"] = str(existing["_id"])
+            print(f"[PAGE SAVE] Overwrote existing document: {existing['_id']}")
+        else:
+            result = collection.insert_one(document)
+            invoice_id = result.inserted_id
+            document["_id"] = str(result.inserted_id)
+            
         # Log activity
         log_activity(
             "invoice_saved",
-            invoice_id=result.inserted_id,
+            invoice_id=invoice_id,
             metadata={
                 "invoice_number": edited.get("invoice_number"),
-                "company_name": edited.get("company_name")
+                "company_name": edited.get("company_name"),
+                "overwritten": True if (existing and force_save) else False
             }
         )
         
@@ -1142,6 +1152,24 @@ def get_analytics():
         # Enforce RBAC ownership isolation
         if request.user.get("role") != "admin":
             match_query["user_id"] = request.user.get("id")
+            
+        # Date range filtering
+        start_date = request.args.get("start_date")
+        end_date = request.args.get("end_date")
+        if start_date or end_date:
+            date_filter = {}
+            if start_date:
+                try:
+                    date_filter["$gte"] = datetime.strptime(start_date.strip(), "%Y-%m-%d")
+                except ValueError:
+                    pass
+            if end_date:
+                try:
+                    date_filter["$lte"] = datetime.strptime(end_date.strip() + " 23:59:59", "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    pass
+            if date_filter:
+                match_query["created_at"] = date_filter
             
         total_invoices = collection.count_documents(match_query)
         

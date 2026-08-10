@@ -88,8 +88,8 @@ export const api = {
   },
 
   // Get Analytics Dashboard Data
-  getAnalytics: async () => {
-    const response = await apiClient.get("/api/analytics");
+  getAnalytics: async (params = {}) => {
+    const response = await apiClient.get("/api/analytics", { params });
     return response.data; // { success, message, data: {...} }
   },
 

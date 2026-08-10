@@ -25,7 +25,8 @@ if not api_key:
     raise RuntimeError("Configuration Error: OPENAI_API_KEY environment variable is not configured. Please set it in your .env file.")
 
 base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-client = OpenAI(api_key=api_key, base_url=base_url)
+import httpx
+client = OpenAI(api_key=api_key, base_url=base_url, http_client=httpx.Client(verify=False))
 
 # Default setting fallbacks
 DEFAULT_SETTINGS = {
@@ -108,9 +109,9 @@ def slice_image_regions(image_path, output_folder, regions=None):
 
     if regions is None:
         regions = {
-            "header_vendor_info": (0.0, 0.0, 0.32, 1.0),
+            "header_vendor_info": (0.0, 0.0, 0.36, 1.0),
             "products_table": (0.30, 0.0, 0.75, 1.0),
-            "tax_and_totals": (0.72, 0.0, 1.0, 1.0)
+            "tax_and_totals": (0.66, 0.0, 1.0, 1.0)
         }
 
     saved_slices = {}
@@ -123,6 +124,7 @@ def slice_image_regions(image_path, output_folder, regions=None):
         )
         cropped_img = pil_img.crop(box)
         slice_path = os.path.join(output_folder, f"{name}.png")
+        # Save as PNG with optimal quality (lossless) to preserve handwritten details
         cropped_img.save(slice_path)
         saved_slices[name] = slice_path
         print(f"[Saved] Sliced region '{name}': {slice_path}")
@@ -141,8 +143,8 @@ def encode_image_to_base64(image_path):
 # 3. PYTHON-SIDE DETERMINISTIC CLEANUP
 # ==========================================
 
-DIGIT_MAP = {}
-LETTER_MAP = {}
+DIGIT_MAP = {"O": "0", "Q": "0", "D": "0", "I": "1", "L": "1", "|": "1", "S": "5", "B": "8", "Z": "2", "G": "6"}
+LETTER_MAP = {"0": "O", "1": "I", "2": "Z", "5": "S", "8": "B"}
 
 
 def clean_invoice_number(val):
@@ -188,6 +190,60 @@ def validate_gstin(gstin):
         return None
 
     return gstin
+
+
+def parse_to_float(v):
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        try:
+            cleaned = "".join(c for c in v if c.isdigit() or c == '.' or c == '-')
+            return float(cleaned) if cleaned else None
+        except ValueError:
+            return None
+    return None
+
+
+def filter_supplier_profiles(profiles, extracted_data=None):
+    """
+    Optimizes supplier profile database tokens by selecting only the most relevant profile
+    or a small subset.
+    """
+    if not profiles:
+        return None
+        
+    if extracted_data:
+        gst = extracted_data.get("company_gst_no")
+        name = extracted_data.get("company_name")
+        matched = []
+        
+        profiles_list = []
+        if isinstance(profiles, list):
+            profiles_list = profiles
+        elif isinstance(profiles, dict):
+            if "profiles" in profiles:
+                profiles_list = profiles["profiles"]
+            else:
+                profiles_list = [profiles]
+                
+        for profile in profiles_list:
+            p_gst = profile.get("company_gst_no")
+            p_name = profile.get("company_name")
+            if gst and p_gst and re.sub(r"[^A-Z0-9]", "", str(gst).upper()) == re.sub(r"[^A-Z0-9]", "", str(p_gst).upper()):
+                matched.append(profile)
+            elif name and p_name and str(name).strip().lower() in str(p_name).strip().lower():
+                matched.append(profile)
+                
+        if matched:
+            print(f"[MEMORY] Supplier profile matched locally: {matched[0].get('company_name')}")
+            return matched
+            
+    # Fallback to returning only the first 3 to minimize vision tokens
+    if isinstance(profiles, list):
+        return profiles[:3]
+    return profiles
 
 
 # ==========================================
@@ -263,7 +319,6 @@ def convert_pdf_to_images(pdf_path, temp_folder, dpi=150):
 
 
 # ==========================================
-# ==========================================
 # 6. CORE EXTRACTION ROUTE
 # ==========================================
 
@@ -288,77 +343,6 @@ def cleanup_old_temp_files(temp_dir_parent, age_seconds=3600):
                 print(f"[Cleanup Warning] Failed to delete {item_path}: {e}")
 
 
-def verify_invoice_with_gpt(image_path, extracted_data):
-    base64_image = encode_image_to_base64(image_path)
-
-    verification_prompt = f"""
-You are a second-pass invoice verification system.
-
-The invoice image is provided below.
-
-The first extraction produced this JSON:
-
-{json.dumps(extracted_data, indent=2, ensure_ascii=False)}
-
-Your task is to independently re-check EVERY field against the actual
-invoice image.
-
-For every field:
-
-1. Look at the original handwriting.
-2. Compare difficult characters with handwriting elsewhere on the invoice.
-3. Check numbers character-by-character.
-4. Check product names carefully.
-5. Check quantity, rate and amount separately.
-6. Check GSTIN character-by-character.
-7. Check invoice number character-by-character.
-8. Check bank account and IFSC character-by-character.
-9. Do not guess unreadable information.
-10. Do not change a value unless the image provides evidence.
-11. Do not modify values simply to make mathematical calculations work.
-12. Check total_amount carefully: it MUST represent the grand total (final payable amount at the bottom of the invoice, inclusive of all taxes like CGST, SGST, IGST, round-offs, etc.), NOT the taxable subtotal of the products.
-
-If the first extraction is correct, keep it unchanged.
-
-Return ONLY the corrected JSON using exactly the same structure.
-"""
-
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        temperature=0,
-        response_format={"type": "json_object"},
-        messages=[
-            {
-                "role": "system",
-                "content": """
-You are a highly accurate handwritten invoice verification system.
-Accuracy is more important than completeness.
-Never guess unreadable characters.
-"""
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": verification_prompt
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": base64_image
-                        }
-                    }
-                ]
-            }
-        ]
-    )
-
-    return json.loads(
-        response.choices[0].message.content.strip()
-    )
-
-
 def validate_invoice_math(data):
     products = data.get("products_list", [])
 
@@ -367,37 +351,13 @@ def validate_invoice_math(data):
         rate = product.get("rate")
         amount = product.get("amount")
 
-        q_num = None
-        r_num = None
-        a_num = None
-
-        if isinstance(quantity, (int, float)):
-            q_num = quantity
-        elif isinstance(quantity, str):
-            try:
-                q_num = float(quantity.split()[0].replace(",", ""))
-            except (ValueError, IndexError):
-                pass
-
-        if isinstance(rate, (int, float)):
-            r_num = rate
-        elif isinstance(rate, str):
-            try:
-                r_num = float(rate.split()[0].replace(",", ""))
-            except (ValueError, IndexError):
-                pass
-
-        if isinstance(amount, (int, float)):
-            a_num = amount
-        elif isinstance(amount, str):
-            try:
-                a_num = float(amount.split()[0].replace(",", ""))
-            except (ValueError, IndexError):
-                pass
+        q_num = parse_to_float(quantity)
+        r_num = parse_to_float(rate)
+        a_num = parse_to_float(amount)
 
         if q_num is not None and r_num is not None and a_num is not None:
             expected = q_num * r_num
-            if abs(expected - a_num) > 0.01:
+            if abs(expected - a_num) > 0.05:
                 product["_calculation_warning"] = True
 
     return data
@@ -408,17 +368,6 @@ def validate_totals(data):
     cgst = data.get("cgst_amount") or 0
     sgst = data.get("sgst_amount") or 0
     igst = data.get("igst_amount") or 0
-
-    def parse_to_float(v):
-        if isinstance(v, (int, float)):
-            return float(v)
-        if isinstance(v, str):
-            try:
-                cleaned = re.sub(r"[^0-9.]", "", v)
-                return float(cleaned) if cleaned else 0.0
-            except ValueError:
-                return 0.0
-        return 0.0
 
     total_num = parse_to_float(total)
     cgst_num = parse_to_float(cgst)
@@ -431,7 +380,7 @@ def validate_totals(data):
     for p in products:
         amount = p.get("amount")
         amount_num = parse_to_float(amount)
-        product_total += amount_num
+        product_total += amount_num or 0.0
 
     data["_validation"] = {
         "product_total": product_total,
@@ -441,6 +390,231 @@ def validate_totals(data):
 
     return data
 
+
+# ==========================================
+# 7. SMART SUSPICIOUS-REGION DETECTOR
+# ==========================================
+
+def needs_verification(data):
+    """
+    Analyzes extracted invoice data locally using deterministic Python checks.
+    Returns which regions are suspicious and require targeted second-pass GPT verification.
+    """
+    suspicious_fields = []
+    suspicious_regions = set()
+    
+    # Mapping of fields to region slices
+    field_to_region = {
+        # Header Fields
+        "company_name": "header",
+        "company_gst_no": "header",
+        "invoice_number": "header",
+        "invoice_date": "header",
+        "state_code": "header",
+        "vehicle_number": "header",
+        "transportation_mode": "header",
+        "buyer_name": "header",
+        "buyer_gst_no": "header",
+        "purchase_order_number": "header",
+        # Products List
+        "products_list": "products",
+        # Totals/Bank Fields
+        "cgst_amount": "totals",
+        "sgst_amount": "totals",
+        "igst_amount": "totals",
+        "total_amount": "totals",
+        "total_amount_in_words": "totals",
+        "bank_account_no": "totals",
+        "bank_ifsc": "totals",
+        "bank_name": "totals"
+    }
+
+    def check_gstin_suspicious(gstin):
+        if not gstin or not isinstance(gstin, str):
+            return True
+        gst_clean = re.sub(r"[^A-Z0-9]", "", gstin.upper())
+        if len(gst_clean) != 15:
+            return True
+        if not gst_clean[:2].isdigit():
+            return True
+        return False
+
+    # A. GSTIN Validation
+    company_gst = data.get("company_gst_no")
+    if not company_gst or check_gstin_suspicious(company_gst):
+        suspicious_fields.append("company_gst_no")
+        suspicious_regions.add("header")
+
+    buyer_gst = data.get("buyer_gst_no")
+    if buyer_gst and check_gstin_suspicious(buyer_gst):
+        suspicious_fields.append("buyer_gst_no")
+        suspicious_regions.add("header")
+
+    # B. Invoice Number Validation
+    inv_num = data.get("invoice_number")
+    if not inv_num or not str(inv_num).strip():
+        suspicious_fields.append("invoice_number")
+        suspicious_regions.add("header")
+
+    # C. Date Check
+    inv_date = data.get("invoice_date")
+    if not inv_date or not str(inv_date).strip():
+        suspicious_fields.append("invoice_date")
+        suspicious_regions.add("header")
+    else:
+        date_str = str(inv_date).strip()
+        if not re.match(r"^(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{2}[/-]\d{2})$", date_str):
+            suspicious_fields.append("invoice_date")
+            suspicious_regions.add("header")
+
+    # E. Missing Critical Header Fields
+    for key in ["company_name", "buyer_name"]:
+        if not data.get(key) or not str(data.get(key)).strip():
+            suspicious_fields.append(key)
+            suspicious_regions.add(field_to_region[key])
+
+    # C/E. Product calculations and line checks
+    products = data.get("products_list", [])
+    if not isinstance(products, list) or len(products) == 0:
+        suspicious_fields.append("products_list")
+        suspicious_regions.add("products")
+    else:
+        for idx, product in enumerate(products):
+            qty = product.get("quantity")
+            rate = product.get("rate")
+            amt = product.get("amount")
+            p_name = product.get("product_name")
+
+            if not p_name or not str(p_name).strip():
+                suspicious_fields.append(f"products_list[{idx}].product_name")
+                suspicious_regions.add("products")
+
+            q_num = parse_to_float(qty)
+            r_num = parse_to_float(rate)
+            a_num = parse_to_float(amt)
+
+            if q_num is not None and r_num is not None and a_num is not None:
+                expected = q_num * r_num
+                if abs(expected - a_num) > 0.05:
+                    suspicious_fields.append(f"products_list[{idx}].amount")
+                    suspicious_regions.add("products")
+            else:
+                if q_num is None:
+                    suspicious_fields.append(f"products_list[{idx}].quantity")
+                if r_num is None:
+                    suspicious_fields.append(f"products_list[{idx}].rate")
+                if a_num is None:
+                    suspicious_fields.append(f"products_list[{idx}].amount")
+                suspicious_regions.add("products")
+
+    # F. IFSC basic structural check
+    ifsc = data.get("bank_ifsc")
+    if ifsc:
+        ifsc_str = str(ifsc).strip().upper()
+        if not re.match(r"^[A-Z]{4}0[A-Z0-9]{6}$", ifsc_str):
+            suspicious_fields.append("bank_ifsc")
+            suspicious_regions.add("totals")
+
+    # D/G. Totals validation
+    total = data.get("total_amount")
+    cgst = data.get("cgst_amount") or 0
+    sgst = data.get("sgst_amount") or 0
+    igst = data.get("igst_amount") or 0
+
+    total_num = parse_to_float(total)
+    cgst_num = parse_to_float(cgst)
+    sgst_num = parse_to_float(sgst)
+    igst_num = parse_to_float(igst)
+
+    if total_num is None or total_num <= 0:
+        suspicious_fields.append("total_amount")
+        suspicious_regions.add("totals")
+
+    product_total = 0.0
+    if isinstance(products, list):
+        for p in products:
+            product_total += parse_to_float(p.get("amount")) or 0.0
+
+    expected_grand_total = product_total + cgst_num + sgst_num + igst_num
+    if total_num is not None:
+        if abs(expected_grand_total - total_num) > 1.0:
+            suspicious_fields.append("total_amount")
+            suspicious_regions.add("totals")
+
+    return {
+        "needs_verification": len(suspicious_regions) > 0,
+        "regions": list(suspicious_regions),
+        "fields": suspicious_fields
+    }
+
+
+def get_current_values_for_region(data, region_name):
+    if region_name == "header":
+        fields = ["company_name", "company_gst_no", "invoice_number", "invoice_date", "state_code", "vehicle_number", "transportation_mode", "buyer_name", "buyer_gst_no", "purchase_order_number"]
+        return {f: data.get(f) for f in fields}
+    elif region_name == "products":
+        return {"products_list": data.get("products_list", [])}
+    elif region_name == "totals":
+        fields = ["cgst_amount", "sgst_amount", "igst_amount", "total_amount", "total_amount_in_words", "bank_account_no", "bank_ifsc", "bank_name"]
+        return {f: data.get(f) for f in fields}
+    return {}
+
+
+def verify_suspicious_region(slice_path, region_name, current_values, supplier_profiles=None, settings=None):
+    """
+    Executes a targeted second-pass GPT-4o verification call on a single slice.
+    """
+    base64_slice = encode_image_to_base64(slice_path)
+    
+    prompt = f"""You are verifying specific invoice OCR fields against the provided {region_name.upper()} slice image.
+
+Check ONLY these fields:
+{json.dumps(current_values, indent=2, ensure_ascii=False)}
+
+Rules:
+- Compare these fields against the visual evidence in the image.
+- Do not modify a value unless the image provides clear visual evidence.
+- Do not guess unreadable characters.
+- Return ONLY the corrected fields inside a valid JSON object matching the input structure.
+"""
+
+    system_prompt = f"You are a highly accurate invoice verification assistant. Verify the provided {region_name} slice."
+    if supplier_profiles and settings and settings.get("organization_memory", True):
+        matched_profiles = filter_supplier_profiles(supplier_profiles, current_values)
+        if matched_profiles:
+            system_prompt += f"\n\n[ORGANIZATION MEMORY] Matched Supplier Profile:\n{json.dumps(matched_profiles, indent=2, cls=SafeJSONEncoder)}"
+        
+    model_name = os.environ.get("OPENAI_MODEL", "gpt-4o")
+    print(f"[GPT] Targeted verification: {region_name.upper()} only")
+    
+    response = client.chat.completions.create(
+        model=model_name,
+        temperature=0.0,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": base64_slice}}
+                ]
+            }
+        ]
+    )
+    
+    usage = getattr(response, "usage", None)
+    prompt_tokens = usage.prompt_tokens if usage else 0
+    completion_tokens = usage.completion_tokens if usage else 0
+    total_tokens = usage.total_tokens if usage else 0
+    
+    corrected_data = json.loads(response.choices[0].message.content.strip())
+    return corrected_data, prompt_tokens, completion_tokens, total_tokens
+
+
+# ==========================================
+# 8. MAIN OCR PIPELINE
+# ==========================================
 
 def run_ocr_pipeline(target_file_path, supplier_profiles=None):
     """
@@ -513,6 +687,15 @@ def run_ocr_pipeline(target_file_path, supplier_profiles=None):
     combined_txt_lines = []
     combined_json_data = {}
     
+    # Cumulative tokens counters
+    cumulative_initial_prompt = 0
+    cumulative_initial_completion = 0
+    cumulative_initial_total = 0
+    cumulative_verification_prompt = 0
+    cumulative_verification_completion = 0
+    cumulative_verification_total = 0
+    cumulative_final_total = 0
+    
     for idx, raw_image in enumerate(image_paths_to_process):
         print(f"\n--- Processing Page {idx + 1}/{len(image_paths_to_process)} ---")
         
@@ -530,142 +713,59 @@ def run_ocr_pipeline(target_file_path, supplier_profiles=None):
         os.makedirs(page_sliced_dir, exist_ok=True)
         
         custom_slices = {
-            "header_vendor_info": (0.0, 0.0, 0.32, 1.0),
+            "header_vendor_info": (0.0, 0.0, 0.36, 1.0),
             "products_table": (0.30, 0.0, 0.75, 1.0),
-            "tax_and_totals": (0.72, 0.0, 1.0, 1.0)
+            "tax_and_totals": (0.66, 0.0, 1.0, 1.0)
         }
         slice_image_regions(preprocessed_path, page_sliced_dir, custom_slices)
         
-        # Base64 encode the crops to pass to GPT
+        # Log slice creation
         header_slice_path = os.path.join(page_sliced_dir, "header_vendor_info.png")
         products_slice_path = os.path.join(page_sliced_dir, "products_table.png")
         totals_slice_path = os.path.join(page_sliced_dir, "tax_and_totals.png")
         
+        print(f"[SLICE] Header created: {header_slice_path}")
+        print(f"[SLICE] Products created: {products_slice_path}")
+        print(f"[SLICE] Totals created: {totals_slice_path}")
+        
+        # Base64 encode the crops to pass to GPT
         base64_header = encode_image_to_base64(header_slice_path)
         base64_products = encode_image_to_base64(products_slice_path)
         base64_totals = encode_image_to_base64(totals_slice_path)
         
-        # Step 2.3: Encode base64 data URL (Pass 1 uses the original raw image)
-        base64_image = encode_image_to_base64(raw_image)
-        
-        # Step 2.4: Call GPT Vision completion
+        # Step 2.3: Call GPT Vision completion with exactly the 3 slices (Pass 1)
         model_name = os.environ.get("OPENAI_MODEL", "gpt-4o")
+        print(f"[GPT] Initial extraction using 3 slices")
         print(f"[GPT-4o OCR] Sending visual API request to {base_url}/chat/completions (model: {model_name})...")
         
-        system_prompt = """
-You are an expert handwritten invoice document extraction system.
+        system_prompt = """You are an expert accounts payable agent. You extract invoice data directly from invoice slices.
+Image 1 is the header/vendor/customer region.
+Image 2 is the product table region.
+Image 3 is the tax/totals/bank region.
 
-Your primary goal is HIGH ACCURACY.
-
-Carefully inspect the invoice image before extracting any information.
-
-IMPORTANT RULES:
-
-1. Extract information directly from the image.
-2. This invoice may contain handwritten text.
-3. Carefully inspect individual handwritten characters.
-4. Compare difficult characters with other characters written by the
-   same person elsewhere in the invoice.
-5. Do NOT guess unreadable characters.
-6. Do NOT invent missing characters.
-7. If a value cannot be reliably determined from the image, return null.
-8. Do NOT modify a value just because another value appears more likely.
-9. Preserve names and product names as they appear.
-10. Preserve invoice numbers exactly as written.
-11. Preserve GSTIN characters exactly as visually observed.
-12. Preserve bank account numbers exactly as visually observed.
-13. Preserve IFSC codes exactly as visually observed.
-14. Preserve quantities, rates and amounts carefully.
-15. Preserve decimal points.
-16. Preserve units such as KG, PCS, ML, LTR, etc.
-17. Keep every product row separate.
-18. Carefully distinguish quantity, rate and amount.
-19. Re-check every extracted field against the image before returning.
-20. Never "fix" handwriting merely to make the invoice mathematically correct.
-
-Pay special attention to commonly confused handwritten characters:
-
-0 / O
-1 / I / L
-2 / Z
-5 / S
-6 / G
-8 / B
-
-Only choose between ambiguous characters when the visual evidence supports
-the choice.
-
+Correct typos in names/addresses.
+Ensure 'total_amount_in_words' is transcribed exactly as written.
+Do not guess unreadable characters. Return null when a value cannot be determined.
 Return ONLY valid JSON.
 """
 
-        user_prompt_text = """
-Extract the following information from the invoice image.
+        user_prompt_text = """Extract data from the three provided invoice slices into JSON with these exact fields:
+company_name, company_gst_no, invoice_number, invoice_date, state_code, vehicle_number, transportation_mode, products_list[{product_name, hsn_code, quantity, rate, amount}], cgst_amount, sgst_amount, igst_amount, total_amount, buyer_name, buyer_gst_no, total_amount_in_words, bank_account_no, bank_ifsc, bank_name, purchase_order_number.
 
-Return exactly this JSON structure:
-
-{
-    "company_name": null,
-    "company_gst_no": null,
-    "invoice_number": null,
-    "invoice_date": null,
-    "state_code": null,
-    "vehicle_number": null,
-    "transportation_mode": null,
-    "buyer_name": null,
-    "buyer_gst_no": null,
-    "purchase_order_number": null,
-
-    "products_list": [
-        {
-            "product_name": null,
-            "hsn_code": null,
-            "quantity": null,
-            "rate": null,
-            "amount": null
-        }
-    ],
-
-    "cgst_amount": null,
-    "sgst_amount": null,
-    "igst_amount": null,
-    "total_amount": null,
-    "total_amount_in_words": null,
-
-    "bank_account_no": null,
-    "bank_ifsc": null,
-    "bank_name": null
-}
-
-EXTRACTION REQUIREMENTS:
-
-- Read the complete invoice before answering.
-- Carefully inspect handwritten text.
-- Preserve the exact visible spelling of names.
-- Preserve invoice numbers exactly.
-- Preserve GSTIN exactly as written.
-- Preserve bank account numbers exactly.
-- Preserve IFSC exactly as written.
-- Preserve product names exactly as visible.
-- Preserve quantity, rate and amount separately.
-- Preserve decimal values.
-- Preserve units.
-- total_amount MUST represent the grand total (final payable amount at the bottom of the invoice, inclusive of all taxes like CGST, SGST, IGST, round-offs, etc.), NOT the taxable subtotal of the products.
-- Do not invent values.
-- If a value is genuinely unreadable, return null.
-- Do not use surrounding business knowledge to invent missing information.
-- Do not change a number simply because another number would make the
-  arithmetic work.
-
-For total_amount_in_words:
-- Transcribe what is visible.
-- Do not generate it from total_amount if handwriting is unclear.
-
-Before returning the JSON, perform a second visual check of every field.
+Rules:
+- Preserve handwritten text, invoice numbers, bank account numbers, IFSC, and GSTIN character-by-character.
+- Preserve units (e.g. KG, PCS) and decimal points in product quantity/rate/amount.
+- Keep every product row separate. Do not merge rows.
+- total_amount must be the final payable grand total, not the taxable subtotal.
+- Return null for fields not visibly present or completely unreadable.
 """
         
+        # Filter and inject matched organization memory supplier profiles if any
         if supplier_profiles and settings.get("organization_memory", True):
-            system_prompt += f"\n\n[ORGANIZATION MEMORY] Known Supplier Profiles:\n{json.dumps(supplier_profiles, indent=2, cls=SafeJSONEncoder)}\n"
-            system_prompt += "If the supplier matches one of these profiles, verify your layout extraction rules using the registered numbering schemes, typical rates, or bank details."
+            filtered_profiles = filter_supplier_profiles(supplier_profiles)
+            if filtered_profiles:
+                system_prompt += f"\n\n[ORGANIZATION MEMORY] Matchable Supplier Profiles:\n{json.dumps(filtered_profiles, indent=2, cls=SafeJSONEncoder)}\n"
+                system_prompt += "Verify layout extraction logic against these known template definitions if applicable."
             
         try:
             response = client.chat.completions.create(
@@ -678,7 +778,6 @@ Before returning the JSON, perform a second visual check of every field.
                         "role": "user",
                         "content": [
                             {"type": "text", "text": user_prompt_text},
-                            {"type": "image_url", "image_url": {"url": base64_image}},
                             {"type": "image_url", "image_url": {"url": base64_header}},
                             {"type": "image_url", "image_url": {"url": base64_products}},
                             {"type": "image_url", "image_url": {"url": base64_totals}}
@@ -687,17 +786,17 @@ Before returning the JSON, perform a second visual check of every field.
                 ]
             )
             
+            # Extract initial tokens count
+            usage = getattr(response, "usage", None)
+            initial_prompt_tokens = usage.prompt_tokens if usage else 0
+            initial_completion_tokens = usage.completion_tokens if usage else 0
+            initial_total_tokens = usage.total_tokens if usage else 0
+            
             page_data = json.loads(
                 response.choices[0].message.content.strip()
             )
             
-            # SECOND PASS VERIFICATION (using preprocessed enhanced image)
-            page_data = verify_invoice_with_gpt(
-                preprocessed_path,
-                page_data
-            )
-            
-            # Step 2.5: Apply page-specific cleanups
+            # Step 2.4: Apply page-specific cleanups on initial data
             if page_data.get("invoice_number"):
                 page_data["invoice_number"] = clean_invoice_number(page_data["invoice_number"])
             if page_data.get("company_gst_no"):
@@ -720,9 +819,106 @@ Before returning the JSON, perform a second visual check of every field.
                     item["rate"] = clean_numeric_value(item.get("rate"))
                     item["amount"] = clean_numeric_value(item.get("amount"))
             
-            # Apply mathematical and total validations (detected warnings, not auto-correcting values)
+            # Apply mathematical and total validations
             page_data = validate_invoice_math(page_data)
             page_data = validate_totals(page_data)
+            
+            # Step 2.5: SMART TARGETED SECOND-PASS VERIFICATION (if suspicious)
+            check_results = needs_verification(page_data)
+            verification_prompt_tokens = 0
+            verification_completion_tokens = 0
+            verification_total_tokens = 0
+            verified_regions_list = []
+            
+            if check_results["needs_verification"]:
+                print(f"[VALIDATION] Suspicious regions detected: {check_results['regions']}")
+                print(f"[VALIDATION] Suspicious fields: {check_results['fields']}")
+                
+                # Perform targeted verification one region at a time
+                verification_updates = {}
+                for region in check_results["regions"]:
+                    slice_map = {
+                        "header": header_slice_path,
+                        "products": products_slice_path,
+                        "totals": totals_slice_path
+                    }
+                    slice_path = slice_map.get(region)
+                    if slice_path and os.path.exists(slice_path):
+                        current_vals = get_current_values_for_region(page_data, region)
+                        print(f"[VALIDATION] Suspicious region: {region.upper()}")
+                        print(f"[VALIDATION] Suspicious fields in region: {list(current_vals.keys())}")
+                        
+                        corrected, p_tok, c_tok, t_tok = verify_suspicious_region(
+                            slice_path,
+                            region,
+                            current_vals,
+                            supplier_profiles=supplier_profiles,
+                            settings=settings
+                        )
+                        
+                        verification_prompt_tokens += p_tok
+                        verification_completion_tokens += c_tok
+                        verification_total_tokens += t_tok
+                        verified_regions_list.append(region)
+                        
+                        # Accumulate corrections
+                        verification_updates.update(corrected)
+                
+                # Merge verification updates
+                if verification_updates:
+                    print(f"[GPT] Merging corrected fields: {list(verification_updates.keys())}")
+                    for key, val in verification_updates.items():
+                        if key in page_data:
+                            page_data[key] = val
+                            
+                    # Re-run cleanups and validations post-verification updates
+                    if page_data.get("invoice_number"):
+                        page_data["invoice_number"] = clean_invoice_number(page_data["invoice_number"])
+                    if page_data.get("company_gst_no"):
+                        page_data["company_gst_no"] = validate_gstin(page_data["company_gst_no"])
+                    if page_data.get("buyer_gst_no"):
+                        page_data["buyer_gst_no"] = validate_gstin(page_data["buyer_gst_no"])
+                    if not page_data.get("state_code") and page_data.get("company_gst_no"):
+                        gst_str = str(page_data["company_gst_no"])
+                        if len(gst_str) >= 2 and gst_str[:2].isdigit():
+                            page_data["state_code"] = gst_str[:2]
+                    for key in ["cgst_amount", "sgst_amount", "igst_amount", "total_amount"]:
+                        if key in page_data:
+                            page_data[key] = clean_numeric_value(page_data[key])
+                    if "products_list" in page_data and isinstance(page_data["products_list"], list):
+                        for item in page_data["products_list"]:
+                            item["quantity"] = clean_numeric_value(item.get("quantity"))
+                            item["rate"] = clean_numeric_value(item.get("rate"))
+                            item["amount"] = clean_numeric_value(item.get("amount"))
+                    page_data = validate_invoice_math(page_data)
+                    page_data = validate_totals(page_data)
+            else:
+                # Log passing validations
+                print(f"[VALIDATION] GSTIN: PASS")
+                print(f"[VALIDATION] Product math: PASS")
+                print(f"[VALIDATION] Totals: PASS")
+                
+            page_total_tokens = initial_total_tokens + verification_total_tokens
+            
+            # Print page summary statistics
+            print(f"\nInitial GPT calls: 1")
+            print(f"Verification calls: {len(verified_regions_list)}")
+            print(f"Verified regions: {', '.join(verified_regions_list) if verified_regions_list else 'none'}")
+            
+            # Log token usage per page
+            print(f"[TOKENS] Page {page_num} usage:")
+            print(f"  Initial Prompt: {initial_prompt_tokens}, Completion: {initial_completion_tokens}, Total: {initial_total_tokens}")
+            print(f"  Verification Prompt: {verification_prompt_tokens}, Completion: {verification_completion_tokens}, Total: {verification_total_tokens}")
+            print(f"  Page Total: {page_total_tokens}")
+            
+            # Update cumulative totals
+            cumulative_initial_prompt += initial_prompt_tokens
+            cumulative_initial_completion += initial_completion_tokens
+            cumulative_initial_total += initial_total_tokens
+            cumulative_verification_prompt += verification_prompt_tokens
+            cumulative_verification_completion += verification_completion_tokens
+            cumulative_verification_total += verification_total_tokens
+            cumulative_final_total += page_total_tokens
             
             # Compile page-level text representation in string buffer
             from io import StringIO
@@ -750,7 +946,6 @@ Before returning the JSON, perform a second visual check of every field.
             combined_json_data[page_name] = page_data
             
             # Structure for the frontend response
-            # Visual path is relative web URL path
             web_image_path = f"/uploads/temp/{filename_base}/page_{page_num}.png" if is_pdf else f"/uploads/{filename_base}.{ext}"
             
             pages_results.append({
@@ -776,6 +971,12 @@ Before returning the JSON, perform a second visual check of every field.
         
     print(f"[Saved Combined] JSON: {combined_json_path}")
     print(f"[Saved Combined] TXT:  {combined_txt_path}")
+    
+    # Print cumulative totals summary
+    print(f"\n[TOKENS CUMULATIVE] Entire PDF/Image Pipeline Run:")
+    print(f"  Total Initial: {cumulative_initial_total} (Prompt: {cumulative_initial_prompt}, Completion: {cumulative_initial_completion})")
+    print(f"  Total Verification: {cumulative_verification_total} (Prompt: {cumulative_verification_prompt}, Completion: {cumulative_verification_completion})")
+    print(f"  Grand Total: {cumulative_final_total}")
     
     # Wrap results
     return {
