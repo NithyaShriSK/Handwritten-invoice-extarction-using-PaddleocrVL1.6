@@ -15,7 +15,7 @@ import {
   ImageIcon,
   Sparkles
 } from "lucide-react";
-import { api } from "../services/api";
+import { api, API_URL } from "../services/api";
 import { exportToCSV, exportToJSON } from "../utils/csvExport";
 import { toast } from "react-toastify";
 import axios from "axios";
@@ -123,7 +123,7 @@ export const InvoiceHistory = () => {
     const ext = imagePath.split(".").pop().toLowerCase();
     const cleanExt = ["png", "jpg", "jpeg"].includes(ext) ? ext : "png";
     const filename = `${cleanNum}_original.${cleanExt}`;
-    const url = imagePath.startsWith("/") ? `http://localhost:5000${imagePath}` : imagePath;
+    const url = imagePath.startsWith("/") ? `${API_URL}${imagePath}` : imagePath;
 
     // Trigger download in new tab
     const link = document.createElement("a");

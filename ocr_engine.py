@@ -14,7 +14,8 @@ from openai import OpenAI
 load_dotenv()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__)) if '__file__' in locals() else os.getcwd()
-UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
+IS_VERCEL = "VERCEL" in os.environ
+UPLOAD_FOLDER = "/tmp/uploads" if IS_VERCEL else os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # -------------------------------------------------------------

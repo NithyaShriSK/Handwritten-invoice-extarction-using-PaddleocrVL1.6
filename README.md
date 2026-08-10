@@ -1,8 +1,8 @@
-# InvoiceAI
+# InvoiceAI 2.0
 
 ### AI-Powered Invoice Processing, OCR Automation, Business Intelligence & Reporting Platform
 
-InvoiceAI is an enterprise-grade AI-powered invoice processing platform that automates invoice extraction, validation, analytics, reporting, and business intelligence using OCR, LLMs, and secure role-based access controls.
+InvoiceAI is an enterprise-grade AI-powered invoice processing platform that automates invoice extraction, validation, analytics, reporting, and business intelligence using hybrid OCR pipelines, OpenAI GPT-4o Vision, and role-based access control.
 
 ---
 
@@ -11,388 +11,167 @@ InvoiceAI is an enterprise-grade AI-powered invoice processing platform that aut
 | Domain | Implemented Features |
 | :--- | :--- |
 | **Authentication & Security** | <ul><li>Google OAuth 2.0 Sign-In Integration</li><li>Secure JWT Token-based Sessions</li><li>Role-Based Access Control (Admin vs. Standard User)</li><li>Strict User Data Isolation & Protected APIs</li><li>Comprehensive System Activity & Audit Logging</li></ul> |
-| **OCR & Invoice Processing** | <ul><li>PaddleOCR-VL Visual & Text Extraction Pipeline</li><li>Local LLM (LLaMA3) Post-Processing for High Accuracy</li><li>Interactive Form Interface with Editable Invoice Fields</li><li>Structured Invoice Review Workflow (Pending, Reviewed, Corrected)</li><li>Automatic Tax calculations (CGST, SGST, IGST)</li><li>Traceable Invoice Modification History</li><li>Secure Invoice Image Upload and Storage</li></ul> |
-| **Analytics & BI Dashboard** | <ul><li>Monthly Invoice Volume Charts</li><li>Monthly Billing Revenue Trend Lines</li><li>OCR Extraction Error & Correction Analysis</li><li>GST Distribution Breakdown (CGST vs. SGST vs. IGST Pie Chart)</li><li>Top Buyers by Billing Metrics</li><li>Revenue Contribution by Buyer (Horizontal 100% Stacked Bar Chart)</li></ul> |
-| **AI Assistant (NiBo)** | <ul><li>Natural Language Querying for Invoices & Billings</li><li>Automated Revenue Trend Summarization</li><li>GST and Tax collection analysis</li><li>System & OCR Accuracy Quality Insights</li><li>On-the-fly Business Reporting</li><li>Exportable PDF Report Generation with ReportLab</li></ul> |
-| **Administration** | <ul><li>User Account Management (Status Activation/Deactivation)</li><li>Real-time User Activity Monitoring Logs</li><li>System-wide Volume & Revenue Analytics</li><li>Global Visibility over all Invoices</li></ul> |
+| **OCR & Processing** | <ul><li>CLAHE Preprocessing and Smart 3-Way Slicing Pipeline</li><li>OpenAI GPT-4o Vision OCR Extraction</li><li>Interactive Form Interface with Editable Invoice Fields</li><li>Automatic Tax calculations (CGST, SGST, IGST)</li><li>Indian Rupee Number-to-Words auto conversion</li><li>Traceable Invoice Modification History</li><li>Secure Image/PDF upload handling</li></ul> |
+| **Analytics & BI Dashboard** | <ul><li>Unified Dashboard containing summary KPIs and aggregations</li><li>Monthly Invoice Volume Bar Charts</li><li>Monthly Billing Revenue Trend Lines</li><li>GST Distribution Breakdown (CGST vs. SGST vs. IGST Pie Chart)</li><li>Top Vendors and Buyers breakdown</li><li>Date Range filter to dynamically slice ledger stats</li></ul> |
+| **AI Assistant & Reporting** | <ul><li>Natural Language Querying for Invoices & Billings</li><li>Automated Revenue Trend Summarization</li><li>On-the-fly Business Reporting</li><li>Exportable PDF Report Generation with ReportLab</li></ul> |
+| **Administration** | <ul><li>User Account Management (Status Activation/Deactivation)</li><li>Real-time User Activity Monitoring Logs</li><li>Global Visibility over all Invoices</li></ul> |
 
 ---
 
-## 2. Architecture Overview
+## 2. System Architecture
 
-### System Data Flow
 ```mermaid
 graph TD
     User([User Client]) <-->|React Frontend| FE[Vite / React App]
-    FE <-->|Axios HTTPS| BE[Flask REST API]
+    FE <-->|Axios HTTPS| BE[FastAPI REST API]
     BE <-->|PyMongo| DB[(MongoDB Atlas)]
-```
-
-### OCR Processing Flow
-```mermaid
-flowchart LR
-    Img[Invoice Image] --> OCR[PaddleOCR-VL]
-    OCR --> LLaMA[LLaMA3 Model]
-    LLaMA --> JSON[Structured Invoice JSON]
-    JSON --> Review[User Review & Edit]
-    Review --> Save[(Save to MongoDB)]
-```
-
-### AI Assistant & Reporting Flow
-```mermaid
-flowchart TD
-    Q[User Query] --> Router[Intent Router]
-    Router --> Engine[Analytics Engine]
-    Engine --> Query[(MongoDB Aggregation)]
-    Query --> Summary[Ollama LLaMA3 Summary]
-    Summary --> PDF[PDF Report Generator]
-    PDF --> Export([User Download])
 ```
 
 ---
 
-## 3. Technology Stack
+## 3. Invoice OCR Architecture
+
+The platform uses an optimized visual OCR pipeline designed to maximize data extraction accuracy while minimizing API token usage:
+
+```mermaid
+flowchart TD
+    Raw[Raw Invoice File] --> Prep[OpenCV CLAHE Preprocessing]
+    Prep --> Slice[Smart 3-Way Vertical Slicer]
+    Slice --> S1[Header Region 0.00-0.36]
+    Slice --> S2[Products Region 0.30-0.75]
+    Slice --> S3[Totals Region 0.66-1.00]
+    S1 & S2 & S3 --> GPT[Initial GPT-4o Vision OCR Pass]
+    GPT --> Validate{Math & Schema Validation}
+    Validate -->|Pass| Save[Save JSON to MongoDB]
+    Validate -->|Fail| Target[Targeted Verification pass on failed region only]
+    Target --> Merge[Merge corrected fields]
+    Merge --> Save
+```
+
+1. **CLAHE Image Preprocessing**: Restores contrast and text definition using OpenCV Contrast Limited Adaptive Histogram Equalization.
+2. **Smart 3-Way Vertical Slicer**: Crops the invoice page into three overlapping visual components (Header, Products, and Totals) based on verified geometric ratios.
+3. **Initial Vision Pass**: Consolidates the three slices into a single vision completion call.
+4. **Validation Check**: Python-side math validators audit `Rate * Quantity = Amount` formulas.
+5. **Targeted Verification**: If discrepancies are found, a second pass is executed **only on the specific failed region slice**, merging corrections back and keeping token consumption minimal.
+
+---
+
+## 4. Technology Stack
 
 ### Frontend
-* **Core:** React 19, Vite, Tailwind CSS
+* **Core:** React 19, Vite 8, Tailwind CSS 3
 * **Routing & State:** React Router, React Hook Form
 * **Charts:** Chart.js, React-Chartjs-2
 * **Networking & Utilities:** Axios, Lucide React, React Toastify, PapaParse
+* **Fonts & Styling:** Outfit (Sans-Serif) & Playfair Display (Serif)
 
 ### Backend
-* **Server:** Flask, Flask-CORS, Werkzeug
-* **Database Driver:** PyMongo
-* **Authentication:** Google Auth, PyJWT, Python-Dotenv
-
-### AI / ML Core
-* **OCR engine:** PaddleOCR-VL
-* **Local Inference:** Ollama, LLaMA3 Model
-* **Model Pipeline:** Transformers, PyTorch
+* **Server:** FastAPI, Uvicorn, ASGI
+* **Database Driver:** PyMongo, Dnspython
+* **Authentication:** Google Auth, PyJWT, Cryptography, Python-Dotenv
+* **OCR & Image Processing:** OpenCV-Python-Headless, PyMuPDF (Fitz), Pillow, NumPy
+* **PDF Compilation:** ReportLab
 
 ### Database
 * **Database:** MongoDB Atlas (NoSQL)
 
-### PDF Reporting
-* **Engine:** ReportLab
-
 ---
 
-## 4. Folder Structure
-
-```text
-paddleocrVL-1.6/
-│
-├── backend_app.py          # Main Flask REST API & Routes
-├── ocr_engine.py           # PaddleOCR-VL & LLM Extraction pipeline
-├── chatbot_service.py      # NiBo AI Assistant orchestrator & cache
-├── intent_router.py        # Chatbot Query Intent Classifier
-├── analytics_queries.py    # MongoDB aggregation pipeline builders
-├── report_generator.py     # AI text summary generation
-├── pdf_generator.py        # ReportLab PDF compilation service
-├── promote_admin.py        # Script to elevate user role to Admin
-├── requirements.txt        # Python backend package requirements
-│
-├── uploads/                # Directory storing uploaded invoice images
-├── reports/                # Directory storing generated PDF reports
-│
-└── frontend/               # React Vite Frontend Application
-    ├── package.json        # Frontend dependencies & npm scripts
-    ├── vite.config.js      # Vite configuration file
-    ├── tailwind.config.js  # Tailwind CSS custom themes & layout
-    ├── index.html          # Main HTML5 entrypoint
-    └── src/
-        ├── main.jsx        # App entry point
-        ├── App.jsx         # App router & layouts
-        ├── index.css       # Global styles & design system
-        ├── components/     # Reusable widgets (Layout, ChatAssistant, ProtectedRoute)
-        ├── pages/          # Full page views (Dashboard, Analytics, AdminDashboard, etc.)
-        ├── services/       # Frontend api service module (api.js)
-        └── utils/          # Utility scripts (csvExport.js)
-```
-
----
-
-## 5. Database Collections
-
-### 1. `users`
-Tracks registered users, permissions, and session timestamps.
-* `_id`: ObjectId (Primary Key)
-* `email`: String (Unique)
-* `name`: String
-* `role`: String ("user" | "admin")
-* `is_active`: Boolean
-* `created_at`: Date
-* `last_login`: Date
-
-### 2. `invoices`
-Stores metadata, OCR parsed values, human-edited entries, and correction logs.
-* `_id`: ObjectId (Primary Key)
-* `user_id`: ObjectId (Uploader identity)
-* `file_path`: String
-* `extracted_data`: Object (Raw OCR output)
-* `invoice_data`: Object (Active/edited structure)
-  * `invoice_number`: String
-  * `invoice_date`: Date
-  * `vendor_name`: String
-  * `buyer_name`: String
-  * `items`: Array of Objects (description, quantity, rate, cgst_amount, sgst_amount, igst_amount, amount)
-  * `total_tax`: Double
-  * `total_revenue`: Double
-* `review_status`: String ("Pending Review" | "Reviewed" | "Corrected")
-* `change_history`: Array of Objects (timestamp, edited_by, diff)
-* `created_at`: Date
-
-### 3. `activity_logs`
-An immutable log auditing user actions and security events.
-* `_id`: ObjectId (Primary Key)
-* `user_id`: ObjectId
-* `user_email`: String
-* `action`: String (e.g., "ocr_upload", "invoice_edit", "login", "chatbot_query")
-* `metadata`: Object (Specific contextual variables)
-* `timestamp`: Date
-
-### 4. `reports`
-Metadata catalog for exported PDF reporting operations.
-* `_id`: ObjectId (Primary Key)
-* `user_id`: ObjectId
-* `report_type`: String (e.g., "monthly_report", "quarterly_report", "yearly_report")
-* `generated_at`: Date
-* `pdf_filename`: String
-* `summary`: String (LLM generated report overview)
-
----
-
-## 6. Installation Guide
+## 5. Local Setup & Configuration
 
 ### Prerequisites
-* Python 3.8+ (with pip)
-* Node.js 18+ (with npm)
-* MongoDB database instance
-* Ollama local LLM runner (with `llama3` model pulled)
+* Python 3.10+
+* Node.js 18+
+* MongoDB Atlas Cluster or local MongoDB instance
 
-### 1. Backend Setup
-Clone the repository, initialize the virtual environment, and install package dependencies:
-```bash
-# Clone the repository
-git clone <repo-url>
-cd paddleocrVL-1.6
+### Environment Variables
+Configure the environment variables in a `.env` file at the project root (reference [`.env.example`](.env.example)):
 
-# Create and activate virtual environment
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install requirements
-pip install -r requirements.txt
-```
-
-### 2. Environment Setup
-Create a `.env` file in the root directory:
-```env
-MONGODB_URI=mongodb+srv://<username>:<password>@cluster0.mongodb.net/
-DB_NAME=invoice_db
+```ini
+# MongoDB Configuration
+MONGODB_URI=mongodb+srv://<username>:<password>@<cluster>.mongodb.net/?appName=Cluster0
+DB_NAME=invoice_ocr
 COLLECTION_NAME=invoices
-GOOGLE_CLIENT_ID=your-google-oauth-client-id
-JWT_SECRET_KEY=your-secure-jwt-secret-key
 
-# Chatbot & Report Settings
+# Authentication Keys
+GOOGLE_CLIENT_ID=<your-google-oauth-client-id>.apps.googleusercontent.com
+JWT_SECRET_KEY=<your-jwt-secret-signing-key>
+
+# OpenAI API Config
+OPENAI_API_KEY=sk-proj-<your-openai-api-key>
+OPENAI_MODEL=gpt-4o
+OPENAI_BASE_URL=https://api.openai.com/v1
+
+# Cache Settings
 CHAT_CACHE_TTL_MINUTES=5
 CHAT_MAX_HISTORY=50
 REPORTS_DIRECTORY=reports
-MAX_REPORT_RECORDS=100
-OLLAMA_MODEL=llama3
-REPORT_RETENTION_DAYS=30
+MAX_REPORT_RECORDS=5000
+REPORT_RETENTION_DAYS=180
 ```
-Create a `.env` file in the frontend directory:
-```env
+
+For the React frontend, configure `frontend/.env` (reference [`frontend/.env.example`](frontend/.env.example)):
+```ini
 VITE_API_URL=http://localhost:5000
-VITE_GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
-
-```
-
-### 3. Frontend Setup
-Navigate into the `frontend` folder, install package dependencies, and start the development server:
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-### 4. Running Backend REST API
-Ensure your virtual environment is active, then run:
-```bash
-python backend_app.py
-```
-
-### 5. Running Ollama Local LLM
-Ensure Ollama is running and has the `llama3` model loaded:
-```bash
-# Start Ollama service
-ollama serve
-
-# Confirm LLaMA3 model is pulled
-ollama pull llama3
-ollama list
+VITE_GOOGLE_CLIENT_ID=<your-google-oauth-client-id>.apps.googleusercontent.com
 ```
 
 ---
 
-## 7. Running with Docker
+## 6. How to Run Locally
 
-InvoiceAI can be completely containerized and run locally using Docker and Docker Compose. This simplifies environment setup by bundling the React Frontend, Flask Backend, MongoDB database, and Ollama service together.
+### Running the Backend (FastAPI)
+1. Navigate to the root directory.
+2. Create and activate a virtual environment.
+3. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+4. Start the Uvicorn application server:
+   ```bash
+   python backend_app.py
+   ```
+5. The API will start on `http://localhost:5000`.
 
-### 1. Prerequisites
-- **Docker Desktop** installed on your host system.
-- **NVIDIA GPU Support (Optional for GPU Acceleration):**
-  - Install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
-  - Ensure Docker Desktop has GPU support enabled (Settings > Resources > WSL integration / Docker engine configuration).
-
-### 2. Services Overview
-The `docker-compose.yml` configures the following containers:
-- **`frontend` (Node 20):** Dev server hosting the React client app, exposed at `http://localhost:5173`.
-- **`backend` (Python 3.10-slim):** Flask REST API backend, exposed at `http://localhost:5000`. Runs CPU-based or GPU-accelerated OCR model processing.
-- **`mongodb` (Mongo Latest):** Database engine, exposed at `http://localhost:27017` with persistent volumes.
-- **`ollama` (Ollama Latest):** Running the local LLaMA3 LLM for post-processing and text summarization, exposed at `http://localhost:11434`.
-
-### 3. GPU Acceleration & CPU Fallback
-- The Docker Compose configuration includes GPU resource reservations.
-- If NVIDIA GPU capabilities are detected, the backend container automatically passes CUDA access to PyTorch.
-- If no GPU is available, the system automatically falls back to CPU execution using OpenMP (`libgomp1`) without code changes.
-
-### 4. Model Persistence & Cache Volumes
-To avoid re-downloading large AI models on container restarts, persistent named Docker volumes are configured:
-- **`hf_cache`:** Caches the `PaddlePaddle/PaddleOCR-VL-1.6` Hugging Face model parameters.
-- **`ollama_data`:** Caches downloaded Ollama models (e.g. `llama3`).
-- **`mongo_data`:** Stores MongoDB data collections.
-- **`uploads_data`, `reports_data`, `invoice_slices_data`:** Stores user-uploaded media files and reports.
-
-### 5. Running the Application
-
-Ensure you have created a `.env` file in the project root containing your API configurations (e.g., `GOOGLE_CLIENT_ID`, `JWT_SECRET_KEY`).
-
-#### Build the Docker Images
-```bash
-docker compose build
-```
-
-#### Start All Services (Detached Mode)
-```bash
-docker compose up -d
-```
-
-#### Rebuild and Start Services
-```bash
-docker compose up --build
-```
-
-#### Stop Services and Remove Containers
-```bash
-docker compose down
-```
-
-#### Confirming Service Status
-The containers use automated health checks. You can check the health status by running:
-```bash
-docker compose ps
-```
-Once all services show `(healthy)`, you can access the frontend in your browser at `http://localhost:5173`.
+### Running the Frontend (React + Vite)
+1. Navigate to the `/frontend` directory:
+   ```bash
+   cd frontend
+   ```
+2. Install node dependencies:
+   ```bash
+   npm install
+   ```
+3. Run the development build:
+   ```bash
+   npm run dev
+   ```
+4. Access the web interface in your browser at `http://localhost:5173`.
 
 ---
 
-## 8. User Roles & Permissions
+## 7. API Health Check Endpoint
 
-| Action / Permission | Standard User (`role = "user"`) | Administrator (`role = "admin"`) |
-| :--- | :---: | :---: |
-| **Upload Invoice Image** | ✓ | ✓ |
-| **Edit / Review Extracted Invoice** | ✓ (Own only) | ✓ (All) |
-| **View Analytics Dashboard** | ✓ (Own calculations) | ✓ (All) |
-| **Ask NiBo Chatbot Queries** | ✓ (Own data context) | ✓ (All systems) |
-| **Generate & Export PDF Reports** | ✓ | ✓ |
-| **Access Admin Dashboard & Logs** | ✗ | ✓ |
-| **Manage Users (Block / Activate)** | ✗ | ✓ |
-| **Global System-Wide Visibility** | ✗ | ✓ |
+Use the following simplified health-check route to verify backend deployment readiness:
 
----
-
-## 9. API Endpoints
-
-### Authentication
-* `POST /api/auth/google` - Exchanges Google OAuth credential token for JWT.
-
-### Invoices
-* `GET /api/invoices` - Retrieve invoice history (scoped or global depending on user role).
-* `POST /api/invoices` - Upload a new invoice image and run the PaddleOCR extraction pipeline.
-* `GET /api/invoices/<id>` - Fetch details of a single invoice.
-* `PUT /api/invoices/<id>` - Submit updates / correction inputs for an invoice.
-* `DELETE /api/invoices/<id>` - Delete an invoice.
-
-### Analytics
-* `GET /api/analytics` - Retrieve user-scoped business analytics metrics.
-* `GET /api/admin/analytics` - Retrieve global, system-wide KPIs.
-
-### Reports
-* `POST /api/chat/report` - Trigger on-the-fly PDF generation based on chatbot analytics context.
-* `GET /api/reports` - Fetch list of previously generated reports.
-* `GET /api/reports/download/<filename>` - Download a generated PDF report file.
-* `DELETE /api/reports/<id>` - Permanently delete a report record.
-
-### NiBo AI Chat
-* `POST /api/chat/query` - Send query strings to NiBo chatbot for analysis, NLP summaries, and prompt execution.
-
-### Admin Tools
-* `GET /api/admin/users` - Fetch all system user accounts.
-* `PUT /api/admin/users/<id>/status` - Activate or block a user account.
-* `GET /api/admin/activity` - Fetch system audit activity logs.
+* **Endpoint**: `GET /api/health`
+* **Response Payload**:
+  ```json
+  {
+    "status": "ok"
+  }
+  ```
 
 ---
 
-## 10. Interface Placeholders
+## 8. Vercel Deployment Instructions
 
-### Login Page
-`[Screenshot Placeholder: Secure Google OAuth and email-based login screen with high-contrast emerald colors]`
+The repository has been structured for Vercel deployment under a unified serverless environment.
 
-### Dashboard
-`[Screenshot Placeholder: User dashboard highlighting statistics widgets, recent uploads list, and quick navigation headers]`
-
-### Invoice Extraction
-`[Screenshot Placeholder: Image-to-text extraction screen showing the original image alongside an editable, side-by-side data review panel]`
-
-### Analytics
-`[Screenshot Placeholder: Interactive chart views showcasing Monthly volume, Billing revenue, Pie Chart GST spreads, and the Buyer Revenue Contribution Stacked Bar]`
-
-### Admin Dashboard
-`[Screenshot Placeholder: Admin dashboard providing access to user management list, active session metrics, and live audit logging feeds]`
-
-### NiBo AI Assistant
-`[Screenshot Placeholder: Floating chatbot assistant window with quick query buttons, chat bubbles, and formatted business reports]`
-
-### Reports
-`[Screenshot Placeholder: Historical view of generated reports ready for local PDF download or server deletion]`
-
----
-
-## 11. Security Features
-
-* **JWT Verification:** All protected API routes require a valid Bearer JWT. Session expiry is strictly enforced.
-* **Role-Based Access Control (RBAC):** Admin routes are blocked from standard users at the backend level.
-* **Ownership Validation:** Standard users cannot access, edit, or query invoices belonging to other accounts.
-* **Report Access Security:** Prevent Path Traversal attacks by sanitizing inputs on directory requests.
-* **Immutable Logs:** System events, login details, edits, and administrative overrides are saved permanently in `activity_logs`.
-* **Google Token Integrity:** Google OAuth credentials are authenticated via Google's `id_token` verification endpoint.
-
----
-
-## 12. Future Enhancements
-
-* **Automated Scheduler:** Run weekly or monthly automated reports and deliver them straight to user emails.
-* **Email Delivery:** Send invoice copies and payment reminders to clients directly from the application.
-* **Multi-Language OCR support:** Add multi-language character matching models to PaddleOCR.
-* **Business Forecasting:** Implement historical models to project future billing, tax cycles, and seasonal revenue.
-* **Vendor Risk Analysis:** Audit supplier invoice patterns to flag potential price variations or duplication errors.
-
----
-
-## 13. Authors & License
-
-### Authors
-* **Boomika S** - [GitHub](https://github.com/boomiikas) | [LinkedIn](https://www.linkedin.com/in/boomika-s-981b55311/)
-* **Nithya Shri S K** - [GitHub](https://github.com/NithyaShriSK) | [LinkedIn](https://www.linkedin.com/in/nithya-shri-s-k-670531353/)
+### Deployment Steps
+1. Push your code to your GitHub repository (ensure `.env` files are blocked in `.gitignore`).
+2. Log in to Vercel and click **Add New Project**.
+3. Select your repository.
+4. Set the **Root Directory** to `/` (project root).
+5. In the **Environment Variables** panel, add the keys listed in `.env.example`.
+6. Click **Deploy**. Vercel will automatically build the React frontend using `@vercel/static-build` and compile the Python serverless API using `@vercel/python`.

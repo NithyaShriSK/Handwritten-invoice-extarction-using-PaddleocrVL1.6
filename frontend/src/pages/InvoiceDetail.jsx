@@ -15,7 +15,7 @@ import {
   AlertTriangle,
   Plus
 } from "lucide-react";
-import { api } from "../services/api";
+import { api, API_URL } from "../services/api";
 import { exportToCSV, exportToJSON } from "../utils/csvExport";
 import { toast } from "react-toastify";
 
@@ -240,7 +240,7 @@ export const InvoiceDetail = () => {
     const cleanExt = ["png", "jpg", "jpeg"].includes(ext) ? ext : "png";
     const filename = `${cleanNum}_original.${cleanExt}`;
     const url = invoice.invoice_image_path.startsWith("/") 
-      ? `http://localhost:5000${invoice.invoice_image_path}` 
+      ? `${API_URL}${invoice.invoice_image_path}` 
       : invoice.invoice_image_path;
 
     const link = document.createElement("a");
@@ -356,7 +356,7 @@ export const InvoiceDetail = () => {
               {invoice?.invoice_image_path ? (
                 <img
                   src={invoice.invoice_image_path.startsWith("/") 
-                    ? `http://localhost:5000${invoice.invoice_image_path}` 
+                    ? `${API_URL}${invoice.invoice_image_path}` 
                     : invoice.invoice_image_path}
                   alt="Invoice Document"
                   className="max-h-[500px] max-w-full object-contain"

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { api } from "../services/api";
+import { api, API_URL } from "../services/api";
 import { toast } from "react-toastify";
 import {
   MessageSquare,
@@ -130,7 +130,7 @@ const ChatAssistant = () => {
       return;
     }
     const token = localStorage.getItem("token");
-    const downloadUrl = `http://localhost:5000/reports/${filename}`;
+    const downloadUrl = `${API_URL}/reports/${filename}`;
     
     fetch(downloadUrl, {
       headers: {

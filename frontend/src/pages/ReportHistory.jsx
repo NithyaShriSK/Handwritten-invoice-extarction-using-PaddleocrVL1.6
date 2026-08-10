@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { api } from "../services/api";
+import { api, API_URL } from "../services/api";
 import { toast } from "react-toastify";
 import { 
   FileText, 
@@ -72,7 +72,7 @@ const ReportHistory = () => {
       return;
     }
     const token = localStorage.getItem("token");
-    const downloadUrl = `http://localhost:5000/reports/${filename}`;
+    const downloadUrl = `${API_URL}/reports/${filename}`;
     
     // Create an anchor and download using token or native download if route is protected
     // Standard secure way: fetch with auth headers or open with token query param

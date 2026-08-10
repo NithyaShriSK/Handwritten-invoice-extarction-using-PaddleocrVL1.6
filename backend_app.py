@@ -2,29 +2,149 @@ import os
 import re
 import uuid
 import json
-from datetime import datetime
-from flask import Flask, request, jsonify, send_from_directory
-from flask_cors import CORS
-from werkzeug.utils import secure_filename
-from pymongo import MongoClient, ASCENDING, DESCENDING
-from bson import ObjectId
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
-import jwt
-from functools import wraps
-from google.oauth2 import id_token
-from google.auth.transport import requests as google_requests
-from datetime import timedelta
+
+# FastAPI and Starlette imports for Flask compatibility layer
+from fastapi import FastAPI, Request, Response, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi import File, UploadFile
+from contextvars import ContextVar
 
 # Import the OCR pipeline from the black-box file
 from ocr_engine import run_ocr_pipeline
 
+from werkzeug.utils import secure_filename
+from pymongo import MongoClient, ASCENDING, DESCENDING
+from bson import ObjectId
+import jwt
+from functools import wraps
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
+
 load_dotenv()
 
-app = Flask(__name__)
-CORS(app)  # Enable CORS for frontend communication
+# Initialize ContextVar to store active request
+_request_ctx_var = ContextVar("request")
 
-# Configuration
-UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER", "uploads")
+class UploadFileWrapper:
+    def __init__(self, upload_file):
+        self.upload_file = upload_file
+        self.filename = upload_file.filename
+        
+    def save(self, destination):
+        self.upload_file.file.seek(0)
+        with open(destination, "wb") as f:
+            f.write(self.upload_file.file.read())
+
+class RequestProxy:
+    def __getattr__(self, name):
+        req = _request_ctx_var.get()
+        if name == "args":
+            return req.query_params
+        elif name == "files":
+            return getattr(req.state, "files", {})
+        elif name == "json":
+            return getattr(req.state, "body_json", None)
+        return getattr(req, name)
+        
+    def __setattr__(self, name, value):
+        req = _request_ctx_var.get()
+        if name == "user":
+            req.state.user = value
+        else:
+            setattr(req, name, value)
+
+    def get_json(self, force=False, silent=False):
+        return getattr(_request_ctx_var.get().state, "body_json", None)
+
+# Instantiate request proxy to replace Flask's thread-local request proxy
+request = RequestProxy()
+
+# Monkeypatch Starlette's Request to support request.user as a property
+@property
+def request_user_property(self):
+    return getattr(self.state, "user", None)
+
+@request_user_property.setter
+def request_user_property(self, value):
+    self.state.user = value
+
+Request.user = request_user_property
+
+def jsonify(*args, **kwargs):
+    if args:
+        if len(args) == 1:
+            return JSONResponse(args[0])
+        return JSONResponse(list(args))
+    return JSONResponse(kwargs)
+
+def send_from_directory(directory, filename):
+    file_path = os.path.join(directory, filename)
+    return FileResponse(file_path)
+
+app = FastAPI()
+
+# Enable CORS for frontend communication
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.config = {}
+
+def translate_flask_path(path: str) -> str:
+    translated = re.sub(r"<path:([^>]+)>", r"{\1:path}", path)
+    translated = re.sub(r"<string:([^>]+)>", r"{\1}", translated)
+    translated = re.sub(r"<([^>]+)>", r"{\1}", translated)
+    return translated
+
+def custom_route(rule, **options):
+    translated_rule = translate_flask_path(rule)
+    return app.api_route(translated_rule, **options)
+
+app.route = custom_route
+
+@app.middleware("http")
+async def request_context_middleware(req: Request, call_next):
+    # 1. Pre-parse JSON body if content-type is application/json
+    body_json = None
+    if "application/json" in req.headers.get("content-type", "").lower():
+        try:
+            body_json = await req.json()
+        except Exception:
+            pass
+    req.state.body_json = body_json
+
+    # 2. Pre-parse files if content-type is multipart/form-data
+    files_dict = {}
+    if "multipart/form-data" in req.headers.get("content-type", "").lower():
+        try:
+            form_data = await req.form()
+            from fastapi import UploadFile
+            for key, val in form_data.items():
+                if isinstance(val, UploadFile):
+                    files_dict[key] = UploadFileWrapper(val)
+        except Exception as e:
+            print(f"[MULTIPART PARSE ERROR] {e}")
+    req.state.files = files_dict
+
+    # 3. Store in context variable
+    token = _request_ctx_var.set(req)
+    try:
+        response = await call_next(req)
+    finally:
+        _request_ctx_var.reset(token)
+    return response
+
+IS_VERCEL = "VERCEL" in os.environ
+UPLOAD_FOLDER = "/tmp/uploads" if IS_VERCEL else os.environ.get("UPLOAD_FOLDER", "uploads")
+REPORTS_DIRECTORY = "/tmp/reports" if IS_VERCEL else os.environ.get("REPORTS_DIRECTORY", "reports")
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY")
 if not SECRET_KEY:
     raise RuntimeError("JWT_SECRET_KEY environment variable is not configured in the environment variables.")
@@ -32,10 +152,9 @@ app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MB limit
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "pdf"}
 
-# Ensure uploads, reports, and invoice_slices directories exist
+# Ensure uploads and reports directories exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(os.environ.get("REPORTS_DIRECTORY", "reports"), exist_ok=True)
-os.makedirs("invoice_slices", exist_ok=True)
+os.makedirs(REPORTS_DIRECTORY, exist_ok=True)
 
 # MongoDB Connection
 MONGO_URI = os.getenv("MONGODB_URI")
@@ -391,6 +510,10 @@ def validate_invoice_fields(data):
 
 # Health Check Endpoints
 @app.route("/api/health", methods=["GET"])
+def api_health_check():
+    return jsonify({"status": "ok"}), 200
+
+
 @app.route("/health", methods=["GET"])
 def health_check():
     mongo_status = "disconnected"
@@ -2218,5 +2341,6 @@ def admin_cleanup_reports():
 
 
 if __name__ == "__main__":
+    import uvicorn
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True,use_reloader=False)
+    uvicorn.run("backend_app:app", host="0.0.0.0", port=port, reload=False)

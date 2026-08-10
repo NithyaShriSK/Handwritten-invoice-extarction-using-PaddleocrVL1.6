@@ -13,7 +13,7 @@ import {
   FileText,
   Image as ImageIcon
 } from "lucide-react";
-import { api } from "../services/api";
+import { api, API_URL } from "../services/api";
 import { exportToCSV, exportToJSON } from "../utils/csvExport";
 import { toast } from "react-toastify";
 
@@ -737,7 +737,7 @@ export const ExtractInvoice = () => {
 
               <div className="rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden bg-slate-100 dark:bg-slate-900/60 max-h-96 flex items-center justify-center">
                 <img
-                  src={imageUrl.startsWith("/") ? `http://localhost:5000${imageUrl}` : imageUrl}
+                  src={imageUrl.startsWith("/") ? `${API_URL}${imageUrl}` : imageUrl}
                   alt="Invoice Preview"
                   className="max-h-96 max-w-full object-contain"
                 />
