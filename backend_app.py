@@ -30,7 +30,7 @@ if not SECRET_KEY:
     raise RuntimeError("JWT_SECRET_KEY environment variable is not configured in the environment variables.")
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MB limit
-ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg"}
+ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "pdf"}
 
 # Ensure uploads, reports, and invoice_slices directories exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -550,7 +550,7 @@ def extract_invoice():
         return make_failure("Empty filename provided.")
     
     if not allowed_file(file.filename):
-        return make_failure("Unsupported file type. Please upload a PNG, JPG, or JPEG image.")
+        return make_failure("Unsupported file type. Please upload a PNG, JPG, JPEG, or PDF file.")
         
     try:
         # Validate file size via content length if possible, or read size
@@ -573,15 +573,26 @@ def extract_invoice():
         
         # Run black box OCR pipeline
         print("[OCR] Starting pipeline")
-        ocr_result = run_ocr_pipeline(save_path)
-        print("[OCR] Extraction successful", ocr_result)
+        ocr_response = run_ocr_pipeline(save_path)
+        print("[OCR] Extraction successful", ocr_response)
         
-        # Convert path to web-accessible URL
-        image_url = f"/uploads/{unique_name}"
+        # Extract flat OCR result and correct visual page image path
+        if isinstance(ocr_response, dict) and "pages" in ocr_response and len(ocr_response["pages"]) > 0:
+            ocr_result = ocr_response["pages"][0]["ocr_result"]
+            image_url = ocr_response["pages"][0]["image_path"]
+            is_multipage = ocr_response.get("is_multipage", False)
+            pages = ocr_response.get("pages", [])
+        else:
+            ocr_result = ocr_response
+            image_url = f"/uploads/{unique_name}"
+            is_multipage = False
+            pages = []
         
         response_data = {
             "ocr_result": ocr_result,
-            "invoice_image_path": image_url
+            "invoice_image_path": image_url,
+            "is_multipage": is_multipage,
+            "pages": pages
         }
         
         # Log activity
@@ -621,13 +632,16 @@ def check_duplicate():
 
 
 def is_value_different(v, orig_v):
+    if isinstance(v, (dict, list)) or isinstance(orig_v, (dict, list)):
+        return v != orig_v
+
     # Try converting both to float if they look like numbers
     try:
         if v is not None and orig_v is not None:
             if str(v).strip() != "" and str(orig_v).strip() != "":
                 if float(v) == float(orig_v):
                     return False
-    except ValueError:
+    except (ValueError, TypeError):
         pass
     
     v_str = "" if v is None else str(v).strip()
@@ -673,6 +687,8 @@ def compute_history_and_status(original, old_edited, new_edited, existing_histor
     # 1. Determine if there are differences between original and new_edited
     is_edited = False
     for k, v in new_edited.items():
+        if k.startswith("_"):
+            continue
         orig_v = original.get(k)
         if k == "products_list":
             if is_products_list_different(v, orig_v):
@@ -693,6 +709,8 @@ def compute_history_and_status(original, old_edited, new_edited, existing_histor
     # If existing history has no entries, we populate it comparing original vs new_edited
     if not new_history:
         for k, v in new_edited.items():
+            if k.startswith("_"):
+                continue
             orig_v = original.get(k)
             if k == "products_list":
                 if is_products_list_different(v, orig_v):
@@ -715,6 +733,8 @@ def compute_history_and_status(original, old_edited, new_edited, existing_histor
     else:
         # If history exists, we append new changes comparing old_edited vs new_edited
         for k, v in new_edited.items():
+            if k.startswith("_"):
+                continue
             old_v = old_edited.get(k)
             if k == "products_list":
                 if is_products_list_different(v, old_v):
@@ -798,12 +818,26 @@ def save_invoice():
             now_str=now_str
         )
         
+        # Add temporary debug logging
+        print("[PAGE SAVE DEBUG] Request Payload received:")
+        print(f"  source_filename: {edited.get('source_filename')}")
+        print(f"  source_page_number: {edited.get('source_page_number')}")
+        print(f"  total_pages: {edited.get('total_pages')}")
+        print(f"  document_type: {edited.get('document_type')}")
+        print(f"  invoice_number: {edited.get('invoice_number')}")
+        print(f"  buyer_name: {edited.get('buyer_name')}")
+        print(f"  products: {edited.get('products_list')}")
+
         document = {
             "original_extracted_data": original,
             "edited_invoice_data": edited,
             "invoice_image_path": image_path,
             "review_status": review_status,
-            "ocr_source": "PaddleOCR-VL",
+            "ocr_source": "GPT-4o",
+            "source_filename": edited.get("source_filename"),
+            "source_page_number": edited.get("source_page_number"),
+            "total_pages": edited.get("total_pages"),
+            "document_type": edited.get("document_type"),
             "user_id": request.user["id"],
             "user_email": request.user["email"],
             "uploaded_by": request.user["email"],
@@ -816,6 +850,9 @@ def save_invoice():
             "created_at": now,
             "updated_at": now
         }
+        
+        print("[PAGE SAVE DEBUG] Document to insert in MongoDB:")
+        print(json.dumps(document, indent=2, default=str))
         
         result = collection.insert_one(document)
         document["_id"] = str(result.inserted_id)
@@ -1022,6 +1059,16 @@ def update_invoice(invoice_id):
         
         if "invoice_image_path" in payload:
             update_data["invoice_image_path"] = payload["invoice_image_path"]
+            
+        # Copy page-level metadata to root document
+        if new_edited.get("source_filename"):
+            update_data["source_filename"] = new_edited["source_filename"]
+        if new_edited.get("source_page_number"):
+            update_data["source_page_number"] = new_edited["source_page_number"]
+        if new_edited.get("total_pages"):
+            update_data["total_pages"] = new_edited["total_pages"]
+        if new_edited.get("document_type"):
+            update_data["document_type"] = new_edited["document_type"]
             
         collection.update_one({"_id": oid}, {"$set": update_data})
         

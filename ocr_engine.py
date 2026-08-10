@@ -1,544 +1,791 @@
-import sys
 import os
+import sys
+import re
+import json
+import base64
 import cv2
 import numpy as np
-from PIL import Image, ImageEnhance, ImageFilter
-import torch
-import json
-import re
-from collections import Counter
-import ollama
-from transformers import AutoConfig, AutoProcessor, AutoModel
+from PIL import Image
+from datetime import datetime, date
+from dotenv import load_dotenv
+from pymongo import MongoClient
+from openai import OpenAI
 
-# ---- Settings & Initial Allocations ----
-model_path = "PaddlePaddle/PaddleOCR-VL-1.6"
-image_path = "invoice.png"  # Swap this out dynamically for any invoice image file
-task = "table" 
+load_dotenv()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__)) if '__file__' in locals() else os.getcwd()
-output_slices_dir = os.path.join(BASE_DIR, "invoice_slices")
-preprocessed_image_output_path = os.path.join(BASE_DIR, "preprocessed_full_invoice.png")
-raw_txt_output_path = os.path.join(BASE_DIR, "raw_ocr_result.txt")
-final_json_output_path = os.path.join(BASE_DIR, "invoice_data.json")
-OLLAMA_MODEL = "llama3" 
-max_pixels = 2048 * 2048
+UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-os.makedirs(output_slices_dir, exist_ok=True)
+# -------------------------------------------------------------
+# 1. API KEY & CLIENT INITIALIZATION
+# -------------------------------------------------------------
+api_key = os.environ.get("OPENAI_API_KEY")
+if not api_key:
+    raise RuntimeError("Configuration Error: OPENAI_API_KEY environment variable is not configured. Please set it in your .env file.")
 
-# ---- Helper Processing Functions ----
-def preprocess_image(image_path, scale_factor=3.0, save_path="preprocessed_full_invoice.png"):
+base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+client = OpenAI(api_key=api_key, base_url=base_url)
+
+# Default setting fallbacks
+DEFAULT_SETTINGS = {
+    "gpt4o_invoice_extraction": True,
+    "organization_memory": True,
+    "human_feedback_learning": True,
+    "confidence_based_learning": True,
+    "invoice_validation_engine": True,
+    "fraud_detection_engine": True,
+}
+
+# Safe JSON Encoder to prevent serialization crashes on MongoDB date/ObjectID fields
+class SafeJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat() + "Z"
+        try:
+            from bson import ObjectId
+            if isinstance(obj, ObjectId):
+                return str(obj)
+        except ImportError:
+            pass
+        return super().default(obj)
+
+def _get_db():
+    try:
+        mongo_uri = os.environ.get("MONGODB_URI", "mongodb://localhost:27017")
+        db_name = os.environ.get("DB_NAME", "invoice_ocr")
+        mc = MongoClient(mongo_uri)
+        return mc[db_name]
+    except Exception:
+        return None
+
+def _get_settings():
+    db = _get_db()
+    if db is None:
+        return dict(DEFAULT_SETTINGS)
+    try:
+        settings = db["ap_settings"].find_one()
+        return settings if settings else dict(DEFAULT_SETTINGS)
+    except Exception:
+        return dict(DEFAULT_SETTINGS)
+
+# ==========================================
+# 2. IMAGE PREPROCESSING & SLICING FUNCTIONS
+# ==========================================
+
+def preprocess_image(image_path, save_path):
+    """
+    Applies grayscale, contrast enhancement (CLAHE).
+    Saves and returns the path to the preprocessed image.
+    """
+    if not os.path.exists(image_path):
+        raise FileNotFoundError(f"Image not found at: {image_path}")
+    
     img = cv2.imread(image_path)
     if img is None:
         raise ValueError(f"Could not read image: {image_path}")
-
-    original_height, original_width = img.shape[:2]
-    new_width = int(original_width * scale_factor)
-    new_height = int(original_height * scale_factor)
-    img_upscaled = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_CUBIC)
-    print(f"[OK] Image upscaled to {new_width}x{new_height}")
-
-    gray = cv2.cvtColor(img_upscaled, cv2.COLOR_BGR2GRAY)
-    denoised = cv2.fastNlMeansDenoising(gray, None, h=8, templateWindowSize=7, searchWindowSize=21)
-
-    coords = np.column_stack(np.where(denoised > 0))
-    if len(coords) > 0:
-        angle = cv2.minAreaRect(coords)[-1]
-        if angle < -45:
-            angle = -(90 + angle)
-        else:
-            angle = -angle
-        if abs(angle) > 0.5:
-            (h, w) = denoised.shape[:2]
-            center = (w // 2, h // 2)
-            M = cv2.getRotationMatrix2D(center, angle, 1.0)
-            denoised = cv2.warpAffine(denoised, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-
-    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-    contrast_enhanced = clahe.apply(denoised)
-
-    kernel = np.ones((1, 1), np.uint8)
-    morphed = cv2.morphologyEx(contrast_enhanced, cv2.MORPH_CLOSE, kernel)
-
-    pil_img = Image.fromarray(morphed).convert('L')
-    pil_img = pil_img.filter(ImageFilter.SHARPEN)
-    pil_img = ImageEnhance.Contrast(pil_img).enhance(1.3)
-    pil_img = ImageEnhance.Brightness(pil_img).enhance(1.1)
-    pil_img = ImageEnhance.Sharpness(pil_img).enhance(1.5)
-
-    pil_img.save(save_path)
-    print(f"[Save] Saved high-resolution preprocessed invoice to: {save_path}")
-    return pil_img
-
-def get_smart_crops_from_pil(pil_image, out_dir="invoice_slices"):
-    """
-    Slices an invoice image into 4 non-overlapping sections based on table geometry:
-    1. Header / Buyer Info (Before the table)
-    2. Table Header + First 5 Rows
-    3. Remaining Rows of the Product Table
-    4. Tax Details, Totals, and Footer
     
-    Robust against shadows, glare, and solid-colored table headers.
-    """
-    if not os.path.exists(out_dir):
-        os.makedirs(out_dir)
-
-    # 1. Convert PIL Image to OpenCV BGR format
-    img = cv2.cvtColor(np.array(pil_image.convert("RGB")), cv2.COLOR_RGB2BGR)
-    h, w = img.shape[:2]
-    
-    # 2. Convert to grayscale
+    # 1. Convert to Grayscale
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
-    # 3. FIX: Adaptive Gaussian Thresholding to eliminate lighting gradients/shadows
-    # Uses a local pixel window to isolate clean lines regardless of dark or bright zones.
-    binary_lines = cv2.adaptiveThreshold(
-        gray, 
-        255, 
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-        cv2.THRESH_BINARY_INV, 
-        21,  # Local pixel neighborhood size
-        4    # Constant subtracted to clean up fine noise
-    )
+    # 2. Adaptive Contrast Enhancement (CLAHE)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
     
-    # 4. Extract horizontal structural lines
-    long_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (int(w * 0.45), 1))
-    detected_long = cv2.morphologyEx(binary_lines, cv2.MORPH_OPEN, long_kernel)
-    long_line_rows = np.where(np.sum(detected_long > 0, axis=1) > (w * 0.30))[0]
+    # 3. Save Preprocessed Image
+    cv2.imwrite(save_path, enhanced)
+    print(f"[Saved] Preprocessed image: {save_path}")
+    return save_path
 
-    def consolidate_lines(rows, gap_threshold=8):
-        cuts = []
-        if len(rows) > 0:
-            current_group = [rows[0]]
-            for y in rows[1:]:
-                if y - current_group[-1] <= gap_threshold:
-                    current_group.append(y)
-                else:
-                    cuts.append(int(np.median(current_group)))
-                    current_group = [y]
-            cuts.append(int(np.median(current_group)))
-        return sorted(cuts)
 
-    raw_cuts = consolidate_lines(long_line_rows)
+def slice_image_regions(image_path, output_folder, regions=None):
+    """
+    Crops specified regions of an image and saves them to disk.
+    Regions can be percentages (0.0 to 1.0) of [ymin, xmin, ymax, xmax].
+    """
+    pil_img = Image.open(image_path)
+    width, height = pil_img.size
 
-    # 5. FIX: Filter out lines crowded too close together inside dark header blocks
-    distinct_cuts = []
-    if len(raw_cuts) > 0:
-        distinct_cuts.append(raw_cuts[0])
-        for cut in raw_cuts[1:]:
-            # Forces a logical vertical separation between grid lines (minimum 25 pixels)
-            if cut - distinct_cuts[-1] > 25:  
-                distinct_cuts.append(cut)
+    if regions is None:
+        regions = {
+            "header_vendor_info": (0.0, 0.0, 0.32, 1.0),
+            "products_table": (0.30, 0.0, 0.75, 1.0),
+            "tax_and_totals": (0.72, 0.0, 1.0, 1.0)
+        }
 
-    # 6. Locate Table Top Boundary
-    upper_candidates = [c for c in distinct_cuts if int(h * 0.15) < c < int(h * 0.35)]
-    table_top = min(upper_candidates) if upper_candidates else int(h * 0.28)
+    saved_slices = {}
+    for name, (ymin, xmin, ymax, xmax) in regions.items():
+        box = (
+            int(xmin * width),
+            int(ymin * height),
+            int(xmax * width),
+            int(ymax * height)
+        )
+        cropped_img = pil_img.crop(box)
+        slice_path = os.path.join(output_folder, f"{name}.png")
+        cropped_img.save(slice_path)
+        saved_slices[name] = slice_path
+        print(f"[Saved] Sliced region '{name}': {slice_path}")
 
-    # 7. Locate Table Bottom Boundary
-    grid_end_candidates = [c for c in distinct_cuts if c > table_top and c < int(h * 0.78)]
-    table_bottom = grid_end_candidates[-1] if grid_end_candidates else int(h * 0.65)
+    return saved_slices
 
-    # 8. Compute 5-Row Cutoff step using clean, individual grid steps
-    post_top_lines = [c for c in distinct_cuts if c > table_top]
-    if len(post_top_lines) >= 2:
-        # Measure height of a clean single row step
-        estimated_row_height = post_top_lines[1] - post_top_lines[0]
-        # Table top line + 1 header step + 5 actual data steps = 6 total steps down
-        table_cutoff = table_top + (estimated_row_height * 6)
-    else:
-        # Proportional fallback fraction if lines are faint
-        table_cutoff = table_top + int((table_bottom - table_top) * 0.45)
 
-    # Prevent cutoff boundary from overshooting the physical table bottom grid line
-    if table_cutoff >= table_bottom:
-        table_cutoff = table_top + ((table_bottom - table_top) // 2)
+def encode_image_to_base64(image_path):
+    """Encodes local image to base64 data URL string."""
+    with open(image_path, "rb") as f:
+        encoded_string = base64.b64encode(f.read()).decode("utf-8")
+    return f"data:image/png;base64,{encoded_string}"
 
-    # 9. Structure sequential layout boundaries for zero-overlap slicing
-    boundaries = [0, table_top, table_cutoff, table_bottom, h]
-    crops = []
 
-    print(f"[Layout Telemetry] Slicing Boundaries for Image ({w}x{h}):\n"
-          f"  Slice 1 (Header Info): 0 -> {boundaries[1]}px\n"
-          f"  Slice 2 (Header + 5 Rows): {boundaries[1]} -> {boundaries[2]}px\n"
-          f"  Slice 3 (Remaining Table): {boundaries[2]} -> {boundaries[3]}px\n"
-          f"  Slice 4 (Tax & Totals): {boundaries[3]} -> {boundaries[4]}px")
+# ==========================================
+# 3. PYTHON-SIDE DETERMINISTIC CLEANUP
+# ==========================================
 
-    # 10. Extract and save non-overlapping slices
-    for i in range(len(boundaries) - 1):
-        start = boundaries[i]
-        end = boundaries[i + 1]
-        
-        # Guard against zero-width image slices
-        if (end - start) < 10: 
-            continue
-            
-        crop_img = img[start:end, :]
-        filename = os.path.join(out_dir, f"slice_{i+1}.png")
-        cv2.imwrite(filename, crop_img)
-        
-        crop_pil = Image.fromarray(cv2.cvtColor(crop_img, cv2.COLOR_BGR2RGB))
-        crops.append(crop_pil)
-        
-    return crops
-# ---- Model Setup Global State ----
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-PROMPTS = {
-    "ocr": "OCR:",
-    "table": "Table Recognition:",
-    "formula": "Formula Recognition:",
-    "chart": "Chart Recognition:",
-    "spotting": "Spotting:",
-    "seal": "Seal Recognition:",
-}
+DIGIT_MAP = {}
+LETTER_MAP = {}
 
-print("Loading config and registering custom model class...")
-config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
 
-def apply_causal_mask_patch():
-    modeling_module = None
-    for mod_name, mod_obj in sys.modules.items():
-        if "modeling_paddleocr_vl" in mod_name:
-            modeling_module = mod_obj
-            break
-    if modeling_module is not None and not hasattr(modeling_module, "_patched"):
-        original_create_causal_mask = modeling_module.create_causal_mask
-        def patched_create_causal_mask(*args, **kwargs):
-            if "inputs_embeds" in kwargs:
-                kwargs["input_embeds"] = kwargs.pop("inputs_embeds")
-            return original_create_causal_mask(*args, **kwargs)
-        modeling_module.create_causal_mask = patched_create_causal_mask
-        modeling_module._patched = True
-        return True
-    return False
+def clean_invoice_number(val):
+    if val is None or isinstance(val, (int, float)):
+        return val
+    val_str = str(val).strip()
+    mapped = "".join(DIGIT_MAP.get(char, char) for char in val_str.upper())
+    cleaned = re.sub(r"[^0-9]", "", mapped)
+    return cleaned if cleaned else val_str
 
-apply_causal_mask_patch()
-print("Loading model parameters onto Device...")
-model = AutoModel.from_pretrained(model_path, config=config, torch_dtype=torch.float16, trust_remote_code=True).to(DEVICE).eval()
-apply_causal_mask_patch()
-processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
-min_pix = processor.image_processor.min_pixels if hasattr(processor.image_processor, 'min_pixels') else 14
 
-def consensus_gstin(candidates, default_state_code=None):
-    if not candidates: return None
-    valid_candidates = []
-    for c in candidates:
-        c_clean = re.sub(r'[^A-Z0-9]', '', c.upper())
-        if len(c_clean) == 15: valid_candidates.append(c_clean)
-        elif 12 <= len(c_clean) <= 18:
-            c_clean = c_clean + "Z" * (15 - len(c_clean)) if len(c_clean) < 15 else c_clean[:15]
-            valid_candidates.append(c_clean)
-    if not valid_candidates: return None
+def clean_numeric_value(val):
+    if val is None or isinstance(val, (int, float)):
+        return val
 
-    position_rules = ["digit", "digit", "alpha", "alpha", "alpha", "alpha", "alpha", "digit", "digit", "digit", "digit", "alpha", "alnum", "Z", "alnum"]
-    final_chars = []
-    for idx, rule in enumerate(position_rules):
-        chars_at_idx = [c[idx] for c in valid_candidates]
-        if rule == "Z":
-            final_chars.append("Z")
-            continue
-        digits = [ch for ch in chars_at_idx if ch.isdigit()]
-        alphas = [ch for ch in chars_at_idx if ch.isalpha()]
-        if rule == "digit":
-            if digits: final_chars.append(Counter(digits).most_common(1)[0][0])
-            else:
-                most_common_char = Counter(chars_at_idx).most_common(1)[0][0]
-                final_chars.append({'O': '0', 'Q': '0', 'I': '1', 'S': '5', 'Z': '2', 'B': '8', 'A': '4'}.get(most_common_char, '0'))
-        elif rule == "alpha":
-            if alphas: final_chars.append(Counter(alphas).most_common(1)[0][0])
-            else:
-                most_common_char = Counter(chars_at_idx).most_common(1)[0][0]
-                final_chars.append({'0': 'O', '1': 'I', '2': 'Z', '5': 'S', '8': 'B'}.get(most_common_char, 'A'))
-        else:
-            final_chars.append(Counter(chars_at_idx).most_common(1)[0][0])
-    resolved = "".join(final_chars)
-    if default_state_code and resolved[:2] != default_state_code: resolved = default_state_code + resolved[2:]
-    return resolved
+    val_str = str(val).strip()
+    match = re.match(r"^([\dOQDIL\|SBZG.,]+)\s*([A-Za-z]+)?$", val_str, re.IGNORECASE)
+    if not match:
+        cleaned = re.sub(r"[^0-9.]", "", val_str)
+        try:
+            return float(cleaned) if "." in cleaned else int(cleaned)
+        except ValueError:
+            return val_str
 
-def advanced_deterministic_extraction(text):
-    clean_text = re.sub(r'</?[fluxe]cel>', ' ', text)
-    lines = [line.strip() for line in clean_text.split("\n") if line.strip()]
-    extracted_company = "NAGANNA RAAJAA SILK INDUSTRIES" # Hardcode directly at base validation level
+    num_part, unit_part = match.groups()
+    cleaned_num = "".join(DIGIT_MAP.get(char, char) for char in num_part.upper())
+    cleaned_num = re.sub(r"[^0-9.]", "", cleaned_num)
 
-    extracted_inv_no = None
-    inv_match = re.search(r"(?:Invoice\s+No\.|Inv\s+No\.|Invoice\s*#)\s*[:\-\s]\s*([A-Za-z0-9\-/]+)", clean_text, re.IGNORECASE)
-    if inv_match: extracted_inv_no = inv_match.group(1).strip()
-
-    date_match = re.search(r"(\d{1,4})[./-](\d{1,2})[./-](\d{2,4})", clean_text)
-    extracted_date = None
-    if date_match:
-        d, m, y = date_match.groups()
-        if len(d) == 4: y, d = d, y
-        extracted_date = f"{d.zfill(2)}/{m.zfill(2)}/{y}"
-
-    extracted_buyer = None
-    buyer_match = re.search(r"To\.\s*[:\-]?\s*([\w\s&]+?)(?=\s*(?:Invoice|No\.|GSTIN|TAX|State|\n|$))", clean_text, re.IGNORECASE)
-    if buyer_match:
-        extracted_buyer = buyer_match.group(1).strip()
-        extracted_buyer = re.sub(r'(?:Invoice|No\.|GSTIN).*', '', extracted_buyer, flags=re.I).strip()
-
-    words_match = re.search(r"((?:Rupees|RUPEES).*?(?:only|ONLY|Rupees|RUPEES)\b)", clean_text, re.I | re.S)
-    extracted_words = None
-    if words_match: extracted_words = words_match.group(1).replace("\n", " ").strip()
-
-    # Improved candidate gathering that tolerates broken spaces within individual words
-    all_gst_candidates = []
-    # Normalize typical broken spacing sequences around text
-    normalized_spaces_text = re.sub(r'\s+', ' ', clean_text.upper())
-    
-    # Robust search looking specifically for 15-character configurations spanning across spaces
-    gst_pattern = r'\b([0-9]{2}[A-Z\s0-9]{10,14}[A-Z0-9])\b'
-    for match in re.findall(gst_pattern, normalized_spaces_text):
-        cleaned = re.sub(r'[^A-Z0-9]', '', match)
-        if len(cleaned) == 15 and cleaned not in all_gst_candidates:
-            all_gst_candidates.append(cleaned)
-
-    company_gst, buyer_gst = None, None
-    supplier_match = re.search(r"GSTIN\s*:\s*([A-Z0-9\s]+?)\s*(?:TAX|INVOICE)", clean_text, re.IGNORECASE)
-    if supplier_match: 
-        company_gst = consensus_gstin([re.sub(r'[^A-Z0-9]', '', supplier_match.group(1).upper())], None)
-    elif len(all_gst_candidates) > 0: 
-        company_gst = consensus_gstin([all_gst_candidates[0]], None)
-
-    # FIX: Updated regex pattern below to handle space separated text matching like "33AWE PN 0221G125"
-    buyer_match_section = re.search(r"GSTIN\s*:\s*([A-Z0-9\s]+?)\s*State\s*Code", clean_text, re.I)
-    if buyer_match_section:
-        buyer_gst_candidate = re.sub(r'[^A-Z0-9]', '', buyer_match_section.group(1).upper())
-        if buyer_gst_candidate != company_gst: 
-            buyer_gst = consensus_gstin([buyer_gst_candidate], None)
-            
-    if not buyer_gst:
-        distinct_candidates = [g for g in all_gst_candidates if g != company_gst]
-        if distinct_candidates: 
-            buyer_gst = consensus_gstin([distinct_candidates[0]], None)
-
-    cgst_val, sgst_val, igst_val = None, None, None
-    cgst_match = re.search(r"CGST\s*(?:\d+%\s*)?[:\-\s]+\s*([\d,]+\.\d{2})", clean_text, re.IGNORECASE)
-    if cgst_match: cgst_val = float(cgst_match.group(1).replace(',', ''))
-    sgst_match = re.search(r"SGST\s*(?:\d+%\s*)?[:\-\s]+\s*([\d,]+\.\d{2})", clean_text, re.IGNORECASE)
-    if sgst_match: sgst_val = float(sgst_match.group(1).replace(',', ''))
-    igst_match = re.search(r"IGST\s*(?:\d+%\s*)?[:\-\s]+\s*([\d,]+\.\d{2})", clean_text, re.IGNORECASE)
-    if igst_match: igst_val = float(igst_match.group(1).replace(',', ''))
-
-    return extracted_company, extracted_inv_no, extracted_date, extracted_buyer, company_gst, buyer_gst, extracted_words, cgst_val, sgst_val, igst_val
-def clean_and_normalize_digits(val):
-    if val is None: return None
-    if isinstance(val, (int, float)): return val
-    s = str(val).upper().strip()
-    for char, replacement in {'O': '0', 'Q': '0', 'I': '1', 'L': '1', 'S': '5', 'Z': '2', 'B': '8'}.items():
-        s = s.replace(char, replacement)
-    cleaned = re.sub(r'[^0-9.]', '', s)
-    if not cleaned: return None
-    try: return float(cleaned) if '.' in cleaned else int(cleaned)
-    except ValueError: return None
-
-def remove_unwanted_spaces(value):
-    if value is None: return None
-    if isinstance(value, str):
-        value = re.sub(r'\s+', ' ', value).strip()
-        if re.match(r'^[0-9]{2}[A-Z0-9]{13}$', value.replace(" ", "").upper()):
-            value = value.replace(" ", "")
-    return value
-
-def validate_and_correct_gstin(gstin):
-    if not gstin: return None
-    gstin = re.sub(r'[^A-Z0-9]', '', str(gstin).upper())
-    if len(gstin) != 15: return gstin
-    chars = list(gstin)
-    digit_map = {"O":"0", "I":"1", "L":"1", "S":"5", "B":"8"}
-    for i in range(0,2):
-        if not chars[i].isdigit(): chars[i] = digit_map.get(chars[i],"0")
-    for i in range(2,7):
-        if chars[i].isdigit(): chars[i]="A"
-    for i in range(7,11):
-        if chars[i].isalpha(): chars[i]=digit_map.get(chars[i],"0")
-    if not chars[11].isalpha(): chars[11]="A"
-    chars[12] = "1"
-    chars[13]="Z"
-    if not chars[14].isalnum(): chars[14]="0"
-    return "".join(chars)
-
-def normalize_all_fields(data):
-    for key,value in data.items():
-        if isinstance(value,str): data[key]=remove_unwanted_spaces(value)
-    for field in ["company_gst_no", "buyer_gst_no"]:
-        if field in data: data[field]=validate_and_correct_gstin(data[field])
-    return data
-
-def process_minor_corrections(data):
-    cleaned_products = []
-    for item in data.get("products_list", []):
-        if not isinstance(item, dict): continue
-        cleaned_products.append({
-            "product_name": item.get("product_name"),
-            "hsn_code": item.get("hsn_code"),
-            "quantity": clean_and_normalize_digits(item.get("quantity")),
-            "rate": clean_and_normalize_digits(item.get("rate")),
-            "amount": clean_and_normalize_digits(item.get("amount"))
-        })
-    data["products_list"] = cleaned_products
-    for field in ["cgst_amount", "sgst_amount", "igst_amount", "total_amount"]:
-        if field in data: data[field] = clean_and_normalize_digits(data[field])
-    return data
-
-def correct_amount_words_with_llm(amount_words):
-    if not amount_words: return None
-    prompt = f"You are an invoice amount words grammar corrector.\nCorrect only the invoice amount words.\nRules:\n- Return ONLY the corrected amount sentence.\n- Do not add explanations.\n- Do not add headings.\n- Do not write 'Here is the corrected...'\n- Do not write 'Output:'\n- Keep the same number value.\n- Fix OCR spelling mistakes.\n- Fix grammar.\n- Remove duplicate words.\n- Start directly with the amount words.\n- End exactly with 'Only'.\n\nInput:\n{amount_words}\n\nCorrected:\n"
     try:
-        response = ollama.chat(model=OLLAMA_MODEL, messages=[{"role": "user", "content": prompt}], options={"temperature":0.0})
-        corrected = response["message"]["content"].strip()
-        corrected = re.sub(r'^(Here\s+is.*?:|Corrected\s*:|Output\s*:|Answer\s*:)', '', corrected, flags=re.I).strip()
-        corrected = re.sub(r'\s+', ' ', corrected).strip().strip('"')
-        if not corrected.lower().endswith("only"): corrected += " Only"
-        return corrected
-    except Exception: return amount_words
+        num_final = float(cleaned_num) if "." in cleaned_num else int(cleaned_num)
+        return f"{num_final} {unit_part}".strip() if unit_part else num_final
+    except ValueError:
+        return val_str
+
+
+def validate_gstin(gstin):
+    if not gstin or not isinstance(gstin, str):
+        return None
+
+    gstin = re.sub(r"[^A-Z0-9]", "", gstin.upper())
+
+    if len(gstin) != 15:
+        return None
+
+    return gstin
 
 
 # ==========================================
-# STREAMLIT RUNWAY FUNCTION CONTAINER
+# 4. SAVE TXT & JSON REPRESENTATION
 # ==========================================
-def run_ocr_pipeline(target_image_path):
-    print("=== Starting Advanced Image Preprocessing ===")
-    preprocessed_full_image = preprocess_image(target_image_path, scale_factor=3.0, save_path=preprocessed_image_output_path)
-    slices = get_smart_crops_from_pil(preprocessed_full_image, out_dir=output_slices_dir)
-    print(f"=== Generated and saved {len(slices)} valid text segments ===\n")
 
-    aggregated_text = []
-    print("\n=== Running Sliced OCR Text Generation Inference ===")
-    for index, slice_img in enumerate(slices):
-        messages = [
+def save_page_txt_representation(data, file_obj, page_num):
+    """
+    Writes a clean, formatted text file of the extracted fields for auditing/review to a file object.
+    """
+    file_obj.write(f"INVOICE EXTRACTION REPORT - PAGE {page_num}\n")
+    file_obj.write("=" * 50 + "\n")
+    file_obj.write(f"Company Name:          {data.get('company_name') or 'N/A'}\n")
+    file_obj.write(f"Company GSTIN:         {data.get('company_gst_no') or 'N/A'}\n")
+    file_obj.write(f"Invoice Number:        {data.get('invoice_number') or 'N/A'}\n")
+    file_obj.write(f"Invoice Date:          {data.get('invoice_date') or 'N/A'}\n")
+    file_obj.write(f"State Code:            {data.get('state_code') or 'N/A'}\n")
+    file_obj.write(f"Vehicle Number:        {data.get('vehicle_number') or 'N/A'}\n")
+    file_obj.write(f"Transportation Mode:   {data.get('transportation_mode') or 'N/A'}\n")
+    file_obj.write(f"Buyer Name:            {data.get('buyer_name') or 'N/A'}\n")
+    file_obj.write(f"Buyer GSTIN:           {data.get('buyer_gst_no') or 'N/A'}\n")
+    file_obj.write(f"Purchase Order Number: {data.get('purchase_order_number') or 'N/A'}\n")
+    file_obj.write("-" * 50 + "\n")
+    file_obj.write("PRODUCTS LIST:\n")
+    
+    products = data.get("products_list") or []
+    if isinstance(products, list):
+        for idx, p in enumerate(products):
+            file_obj.write(f"  {idx + 1}. Product: {p.get('product_name') or 'N/A'}\n")
+            file_obj.write(f"     HSN Code: {p.get('hsn_code') or 'N/A'} | Qty: {p.get('quantity') or 0} | Rate: {p.get('rate') or 0} | Amount: {p.get('amount') or 0}\n")
+    else:
+        file_obj.write("  No products found.\n")
+        
+    file_obj.write("-" * 50 + "\n")
+    file_obj.write(f"CGST Amount:           {data.get('cgst_amount') or 0}\n")
+    file_obj.write(f"SGST Amount:           {data.get('sgst_amount') or 0}\n")
+    file_obj.write(f"IGST Amount:           {data.get('igst_amount') or 0}\n")
+    file_obj.write(f"Total Amount:          {data.get('total_amount') or 0}\n")
+    file_obj.write(f"Total Amount in Words: {data.get('total_amount_in_words') or 'N/A'}\n")
+    file_obj.write(f"Bank Account No:       {data.get('bank_account_no') or 'N/A'}\n")
+    file_obj.write(f"Bank IFSC:             {data.get('bank_ifsc') or 'N/A'}\n")
+    file_obj.write(f"Bank Name:             {data.get('bank_name') or 'N/A'}\n")
+    file_obj.write("=" * 50 + "\n")
+
+def save_page_txt_to_file(data, txt_path, page_num):
+    with open(txt_path, "w", encoding="utf-8") as f:
+        save_page_txt_representation(data, f, page_num)
+
+
+# ==========================================
+# 5. MULTI-PAGE PDF CONVERSION UTILITY
+# ==========================================
+
+def convert_pdf_to_images(pdf_path, temp_folder, dpi=150):
+    """
+    Renders PDF pages into temporary PNG files using PyMuPDF (fitz).
+    Returns list of page image paths.
+    """
+    import fitz  # PyMuPDF
+    print(f"[PDF] Opening document: {pdf_path} (DPI: {dpi})")
+    doc = fitz.open(pdf_path)
+    page_images = []
+    
+    for page_num in range(len(doc)):
+        page = doc.load_page(page_num)
+        pix = page.get_pixmap(dpi=dpi)
+        img_filename = os.path.join(temp_folder, f"page_{page_num + 1}.png")
+        pix.save(img_filename)
+        page_images.append(img_filename)
+        print(f"[PDF] Converted Page {page_num + 1} -> {img_filename}")
+        
+    return page_images
+
+
+# ==========================================
+# ==========================================
+# 6. CORE EXTRACTION ROUTE
+# ==========================================
+
+def cleanup_old_temp_files(temp_dir_parent, age_seconds=3600):
+    """
+    Deletes subdirectories inside temp_dir_parent that are older than age_seconds.
+    """
+    if not os.path.exists(temp_dir_parent):
+        return
+    import shutil
+    import time
+    now = time.time()
+    for item in os.listdir(temp_dir_parent):
+        item_path = os.path.join(temp_dir_parent, item)
+        if os.path.isdir(item_path):
+            try:
+                mtime = os.path.getmtime(item_path)
+                if now - mtime > age_seconds:
+                    shutil.rmtree(item_path)
+                    print(f"[Cleanup] Deleted old temp folder: {item_path}")
+            except Exception as e:
+                print(f"[Cleanup Warning] Failed to delete {item_path}: {e}")
+
+
+def verify_invoice_with_gpt(image_path, extracted_data):
+    base64_image = encode_image_to_base64(image_path)
+
+    verification_prompt = f"""
+You are a second-pass invoice verification system.
+
+The invoice image is provided below.
+
+The first extraction produced this JSON:
+
+{json.dumps(extracted_data, indent=2, ensure_ascii=False)}
+
+Your task is to independently re-check EVERY field against the actual
+invoice image.
+
+For every field:
+
+1. Look at the original handwriting.
+2. Compare difficult characters with handwriting elsewhere on the invoice.
+3. Check numbers character-by-character.
+4. Check product names carefully.
+5. Check quantity, rate and amount separately.
+6. Check GSTIN character-by-character.
+7. Check invoice number character-by-character.
+8. Check bank account and IFSC character-by-character.
+9. Do not guess unreadable information.
+10. Do not change a value unless the image provides evidence.
+11. Do not modify values simply to make mathematical calculations work.
+12. Check total_amount carefully: it MUST represent the grand total (final payable amount at the bottom of the invoice, inclusive of all taxes like CGST, SGST, IGST, round-offs, etc.), NOT the taxable subtotal of the products.
+
+If the first extraction is correct, keep it unchanged.
+
+Return ONLY the corrected JSON using exactly the same structure.
+"""
+
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        temperature=0,
+        response_format={"type": "json_object"},
+        messages=[
+            {
+                "role": "system",
+                "content": """
+You are a highly accurate handwritten invoice verification system.
+Accuracy is more important than completeness.
+Never guess unreadable characters.
+"""
+            },
             {
                 "role": "user",
                 "content": [
-                    {"type": "image", "image": slice_img},
-                    {"type": "text", "text": PROMPTS[task]},
+                    {
+                        "type": "text",
+                        "text": verification_prompt
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": base64_image
+                        }
+                    }
                 ]
             }
         ]
+    )
 
-        inputs = processor.apply_chat_template(
-            messages, add_generation_prompt=True, tokenize=True, return_dict=True, return_tensors="pt",
-            images_kwargs={"size": {"shortest_edge": min_pix, "longest_edge": max_pixels}},
-        ).to(model.device)
+    return json.loads(
+        response.choices[0].message.content.strip()
+    )
 
-        with torch.no_grad():
-            outputs = model.generate(**inputs, max_new_tokens=512, do_sample=True,temperature=0.01,top_p=1,repetition_penalty=1.05)
 
-        slice_result = processor.decode(outputs[0][inputs["input_ids"].shape[-1]:-1], skip_special_tokens=True)
-        aggregated_text.append(slice_result)
+def validate_invoice_math(data):
+    products = data.get("products_list", [])
 
-    full_raw_ocr_string = "\n".join(aggregated_text)
+    for product in products:
+        quantity = product.get("quantity")
+        rate = product.get("rate")
+        amount = product.get("amount")
+
+        q_num = None
+        r_num = None
+        a_num = None
+
+        if isinstance(quantity, (int, float)):
+            q_num = quantity
+        elif isinstance(quantity, str):
+            try:
+                q_num = float(quantity.split()[0].replace(",", ""))
+            except (ValueError, IndexError):
+                pass
+
+        if isinstance(rate, (int, float)):
+            r_num = rate
+        elif isinstance(rate, str):
+            try:
+                r_num = float(rate.split()[0].replace(",", ""))
+            except (ValueError, IndexError):
+                pass
+
+        if isinstance(amount, (int, float)):
+            a_num = amount
+        elif isinstance(amount, str):
+            try:
+                a_num = float(amount.split()[0].replace(",", ""))
+            except (ValueError, IndexError):
+                pass
+
+        if q_num is not None and r_num is not None and a_num is not None:
+            expected = q_num * r_num
+            if abs(expected - a_num) > 0.01:
+                product["_calculation_warning"] = True
+
+    return data
+
+
+def validate_totals(data):
+    total = data.get("total_amount")
+    cgst = data.get("cgst_amount") or 0
+    sgst = data.get("sgst_amount") or 0
+    igst = data.get("igst_amount") or 0
+
+    def parse_to_float(v):
+        if isinstance(v, (int, float)):
+            return float(v)
+        if isinstance(v, str):
+            try:
+                cleaned = re.sub(r"[^0-9.]", "", v)
+                return float(cleaned) if cleaned else 0.0
+            except ValueError:
+                return 0.0
+        return 0.0
+
+    total_num = parse_to_float(total)
+    cgst_num = parse_to_float(cgst)
+    sgst_num = parse_to_float(sgst)
+    igst_num = parse_to_float(igst)
+
+    products = data.get("products_list", [])
+    product_total = 0.0
+
+    for p in products:
+        amount = p.get("amount")
+        amount_num = parse_to_float(amount)
+        product_total += amount_num
+
+    data["_validation"] = {
+        "product_total": product_total,
+        "tax_total": cgst_num + sgst_num + igst_num,
+        "extracted_total": total_num
+    }
+
+    return data
+
+
+def run_ocr_pipeline(target_file_path, supplier_profiles=None):
+    """
+    Core pipeline entry point.
+    Determines file type (Image/PDF), processes page visual OCR, runs deterministic cleanups,
+    saves page-specific JSON/TXT files, and returns page-by-page structured results.
+    """
+    # Run automatic cleanup of temporary folders older than 1 hour
+    cleanup_old_temp_files(os.path.join(UPLOAD_FOLDER, "temp"), age_seconds=3600)
+
+    settings = _get_settings()
+    filename_base = os.path.basename(target_file_path).rsplit(".", 1)[0]
+    ext = target_file_path.lower().split(".")[-1]
     
-    # Clean structural brackets out of raw text stream to avoid model formatting confusion
-    full_raw_ocr_string = full_raw_ocr_string.replace("{", "(").replace("}", ")")
+    # 1. Create main output folder under uploads/output/<filename_base>
+    output_base_dir = os.path.join(UPLOAD_FOLDER, "output", filename_base)
+    os.makedirs(output_base_dir, exist_ok=True)
     
-    with open(raw_txt_output_path, "w", encoding="utf-8") as txt_file:
-        txt_file.write(full_raw_ocr_string)
+    # Create subdirectories for preprocessed and sliced images
+    preprocessed_dir = os.path.join(output_base_dir, "preprocessed_images")
+    sliced_dir = os.path.join(output_base_dir, "sliced_images")
+    os.makedirs(preprocessed_dir, exist_ok=True)
+    os.makedirs(sliced_dir, exist_ok=True)
+    
+    # Create temp folder for fitz PDF-to-image conversion
+    temp_folder = os.path.join(UPLOAD_FOLDER, "temp", filename_base)
+    os.makedirs(temp_folder, exist_ok=True)
+    
+    is_pdf = target_file_path.lower().endswith(".pdf")
+    image_paths_to_process = []
+    
+    # Read environment configurations
+    try:
+        max_pdf_pages = int(os.environ.get("MAX_PDF_PAGES", "15"))
+    except ValueError:
+        max_pdf_pages = 15
+        
+    try:
+        pdf_render_dpi = int(os.environ.get("PDF_RENDER_DPI", "150"))
+    except ValueError:
+        pdf_render_dpi = 150
+    
+    if is_pdf:
+        # Strict pre-validation: check page count before any rendering/conversion
+        import fitz
+        try:
+            doc = fitz.open(target_file_path)
+            if doc.is_encrypted:
+                doc.close()
+                raise ValueError("PDF file is password-protected.")
+            page_count = len(doc)
+            doc.close()
+        except Exception as e:
+            if "password-protected" in str(e):
+                raise e
+            raise ValueError(f"Invalid or corrupted PDF file: {str(e)}")
+            
+        if page_count > max_pdf_pages:
+            raise ValueError(f"PDF contains {page_count} pages. The maximum allowed is {max_pdf_pages} pages.")
+            
+        try:
+            image_paths_to_process = convert_pdf_to_images(target_file_path, temp_folder, dpi=pdf_render_dpi)
+        except Exception as pdf_err:
+            print(f"[ERROR] PDF page conversion failed: {pdf_err}")
+            raise ValueError(f"Failed to process PDF pages: {str(pdf_err)}")
+    else:
+        image_paths_to_process = [target_file_path]
+        
+    pages_results = []
+    combined_txt_lines = []
+    combined_json_data = {}
+    
+    for idx, raw_image in enumerate(image_paths_to_process):
+        print(f"\n--- Processing Page {idx + 1}/{len(image_paths_to_process)} ---")
+        
+        page_num = idx + 1
+        page_name = f"page{page_num}"
+        
+        # Save preprocessed image named like page1.png, page2.png
+        preprocessed_path = os.path.join(preprocessed_dir, f"{page_name}.png")
+        
+        # Step 2.1: Preprocess CLAHE Contrast
+        preprocess_image(raw_image, preprocessed_path)
+        
+        # Step 2.2: Slice sections to uploads/output/<filename>/sliced_images/page{X}
+        page_sliced_dir = os.path.join(sliced_dir, page_name)
+        os.makedirs(page_sliced_dir, exist_ok=True)
+        
+        custom_slices = {
+            "header_vendor_info": (0.0, 0.0, 0.32, 1.0),
+            "products_table": (0.30, 0.0, 0.75, 1.0),
+            "tax_and_totals": (0.72, 0.0, 1.0, 1.0)
+        }
+        slice_image_regions(preprocessed_path, page_sliced_dir, custom_slices)
+        
+        # Base64 encode the crops to pass to GPT
+        header_slice_path = os.path.join(page_sliced_dir, "header_vendor_info.png")
+        products_slice_path = os.path.join(page_sliced_dir, "products_table.png")
+        totals_slice_path = os.path.join(page_sliced_dir, "tax_and_totals.png")
+        
+        base64_header = encode_image_to_base64(header_slice_path)
+        base64_products = encode_image_to_base64(products_slice_path)
+        base64_totals = encode_image_to_base64(totals_slice_path)
+        
+        # Step 2.3: Encode base64 data URL (Pass 1 uses the original raw image)
+        base64_image = encode_image_to_base64(raw_image)
+        
+        # Step 2.4: Call GPT Vision completion
+        model_name = os.environ.get("OPENAI_MODEL", "gpt-4o")
+        print(f"[GPT-4o OCR] Sending visual API request to {base_url}/chat/completions (model: {model_name})...")
+        
+        system_prompt = """
+You are an expert handwritten invoice document extraction system.
 
-    p_company, p_inv, p_date, p_buyer, p_comp_gst, p_buyer_gst, p_words, p_cgst, p_sgst, p_igst = advanced_deterministic_extraction(full_raw_ocr_string)
+Your primary goal is HIGH ACCURACY.
 
-    llm_prompt = f"""
-You are an advanced data extraction system. Your goal is to combine raw OCR text with verified key/value pairs to output clean JSON data.
+Carefully inspect the invoice image before extracting any information.
 
-Deterministic Ground-Truth Overrides:
-- "company_name": "{p_company if p_company else 'null'}"
-- "company_gst_no": "{p_comp_gst}"
-- "invoice_number": "{p_inv}"
-- "invoice_date": "{p_date}"
-- "buyer_name": "{p_buyer}"
-- "buyer_gst_no": "{p_buyer_gst if p_buyer_gst else 'null'}"
-- "total_amount_in_words": "{p_words}"
-- "cgst_amount": {p_cgst if p_cgst is not None else 'null'}
-- "sgst_amount": {p_sgst if p_sgst is not None else 'null'}
-- "igst_amount": {p_igst if p_igst is not None else 'null'}
+IMPORTANT RULES:
 
-Target JSON Schema Structure:
-{{
-  "company_name": "string or null",
-  "company_gst_no": "string or null",
-  "invoice_number": "string or null",
-  "invoice_date": "string or null",
-  "state_code": "string or null",
-  "vehicle_number": "string or null",
-  "transportation_mode": "string or null",
-  "products_list": [
-     {{
-       "product_name": "string",
-       "hsn_code": "string or null",
-       "quantity": number or null,
-       "rate": number or null,
-       "amount": number or null
-     }}
-  ],
-  "cgst_amount": number or null,
-  "sgst_amount": number or null,
-  "igst_amount": number or null,
-  "total_amount": number or null,
-  "buyer_name": "string or null",
-  "buyer_gst_no": "string or null",
-  "total_amount_in_words": "string or null"
-}}
+1. Extract information directly from the image.
+2. This invoice may contain handwritten text.
+3. Carefully inspect individual handwritten characters.
+4. Compare difficult characters with other characters written by the
+   same person elsewhere in the invoice.
+5. Do NOT guess unreadable characters.
+6. Do NOT invent missing characters.
+7. If a value cannot be reliably determined from the image, return null.
+8. Do NOT modify a value just because another value appears more likely.
+9. Preserve names and product names as they appear.
+10. Preserve invoice numbers exactly as written.
+11. Preserve GSTIN characters exactly as visually observed.
+12. Preserve bank account numbers exactly as visually observed.
+13. Preserve IFSC codes exactly as visually observed.
+14. Preserve quantities, rates and amounts carefully.
+15. Preserve decimal points.
+16. Preserve units such as KG, PCS, ML, LTR, etc.
+17. Keep every product row separate.
+18. Carefully distinguish quantity, rate and amount.
+19. Re-check every extracted field against the image before returning.
+20. Never "fix" handwriting merely to make the invoice mathematically correct.
 
-Strict Behavioral Rules:
-1. SOURCE RESTRICTION: Extract values ONLY from Ground-Truth Overrides or current Raw OCR Text. If unavailable, return null.
-2. NUMERIC EXTRACTION: Copy numbers exactly. Do not recalculate math expressions.
+Pay special attention to commonly confused handwritten characters:
 
-FINAL OUTPUT ENFORCEMENT:
-- Return exactly one valid JSON object.
-- Do not add conversational sentences before or after the JSON.
+0 / O
+1 / I / L
+2 / Z
+5 / S
+6 / G
+8 / B
 
-Raw OCR Text Data:
-{full_raw_ocr_string}
+Only choose between ambiguous characters when the visual evidence supports
+the choice.
+
+Return ONLY valid JSON.
 """
-    # Fix: Added format="json" option to natively enforce strict object returns in Ollama
-    response = ollama.chat(model=OLLAMA_MODEL, format="json", messages=[{"role": "user", "content": llm_prompt}], options={"temperature": 0.0})
-    response_text = response['message']['content'].strip()
 
-    # Standardize string bounds extraction
-    if response_text.startswith("```json"): 
-        response_text = response_text[7:]
-    elif response_text.startswith("```"): 
-        response_text = response_text[3:]
-    if response_text.endswith("```"): 
-        response_text = response_text[:-3]
-    response_text = response_text.strip()
+        user_prompt_text = """
+Extract the following information from the invoice image.
 
-    first_bracket = response_text.find('{')
-    last_bracket = response_text.rfind('}')
+Return exactly this JSON structure:
+
+{
+    "company_name": null,
+    "company_gst_no": null,
+    "invoice_number": null,
+    "invoice_date": null,
+    "state_code": null,
+    "vehicle_number": null,
+    "transportation_mode": null,
+    "buyer_name": null,
+    "buyer_gst_no": null,
+    "purchase_order_number": null,
+
+    "products_list": [
+        {
+            "product_name": null,
+            "hsn_code": null,
+            "quantity": null,
+            "rate": null,
+            "amount": null
+        }
+    ],
+
+    "cgst_amount": null,
+    "sgst_amount": null,
+    "igst_amount": null,
+    "total_amount": null,
+    "total_amount_in_words": null,
+
+    "bank_account_no": null,
+    "bank_ifsc": null,
+    "bank_name": null
+}
+
+EXTRACTION REQUIREMENTS:
+
+- Read the complete invoice before answering.
+- Carefully inspect handwritten text.
+- Preserve the exact visible spelling of names.
+- Preserve invoice numbers exactly.
+- Preserve GSTIN exactly as written.
+- Preserve bank account numbers exactly.
+- Preserve IFSC exactly as written.
+- Preserve product names exactly as visible.
+- Preserve quantity, rate and amount separately.
+- Preserve decimal values.
+- Preserve units.
+- total_amount MUST represent the grand total (final payable amount at the bottom of the invoice, inclusive of all taxes like CGST, SGST, IGST, round-offs, etc.), NOT the taxable subtotal of the products.
+- Do not invent values.
+- If a value is genuinely unreadable, return null.
+- Do not use surrounding business knowledge to invent missing information.
+- Do not change a number simply because another number would make the
+  arithmetic work.
+
+For total_amount_in_words:
+- Transcribe what is visible.
+- Do not generate it from total_amount if handwriting is unclear.
+
+Before returning the JSON, perform a second visual check of every field.
+"""
+        
+        if supplier_profiles and settings.get("organization_memory", True):
+            system_prompt += f"\n\n[ORGANIZATION MEMORY] Known Supplier Profiles:\n{json.dumps(supplier_profiles, indent=2, cls=SafeJSONEncoder)}\n"
+            system_prompt += "If the supplier matches one of these profiles, verify your layout extraction rules using the registered numbering schemes, typical rates, or bank details."
+            
+        try:
+            response = client.chat.completions.create(
+                model=model_name,
+                temperature=0.0,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": user_prompt_text},
+                            {"type": "image_url", "image_url": {"url": base64_image}},
+                            {"type": "image_url", "image_url": {"url": base64_header}},
+                            {"type": "image_url", "image_url": {"url": base64_products}},
+                            {"type": "image_url", "image_url": {"url": base64_totals}}
+                        ]
+                    }
+                ]
+            )
+            
+            page_data = json.loads(
+                response.choices[0].message.content.strip()
+            )
+            
+            # SECOND PASS VERIFICATION (using preprocessed enhanced image)
+            page_data = verify_invoice_with_gpt(
+                preprocessed_path,
+                page_data
+            )
+            
+            # Step 2.5: Apply page-specific cleanups
+            if page_data.get("invoice_number"):
+                page_data["invoice_number"] = clean_invoice_number(page_data["invoice_number"])
+            if page_data.get("company_gst_no"):
+                page_data["company_gst_no"] = validate_gstin(page_data["company_gst_no"])
+            if page_data.get("buyer_gst_no"):
+                page_data["buyer_gst_no"] = validate_gstin(page_data["buyer_gst_no"])
+
+            if not page_data.get("state_code") and page_data.get("company_gst_no"):
+                gst_str = str(page_data["company_gst_no"])
+                if len(gst_str) >= 2 and gst_str[:2].isdigit():
+                    page_data["state_code"] = gst_str[:2]
+
+            for key in ["cgst_amount", "sgst_amount", "igst_amount", "total_amount"]:
+                if key in page_data:
+                    page_data[key] = clean_numeric_value(page_data[key])
+
+            if "products_list" in page_data and isinstance(page_data["products_list"], list):
+                for item in page_data["products_list"]:
+                    item["quantity"] = clean_numeric_value(item.get("quantity"))
+                    item["rate"] = clean_numeric_value(item.get("rate"))
+                    item["amount"] = clean_numeric_value(item.get("amount"))
+            
+            # Apply mathematical and total validations (detected warnings, not auto-correcting values)
+            page_data = validate_invoice_math(page_data)
+            page_data = validate_totals(page_data)
+            
+            # Compile page-level text representation in string buffer
+            from io import StringIO
+            string_buffer = StringIO()
+            save_page_txt_representation(page_data, string_buffer, page_num)
+            page_txt_content = string_buffer.getvalue().strip()
+            combined_txt_lines.append(f"{page_name}: {page_txt_content}")
+            
+            # Save individual page JSON and TXT files (e.g. page1.json, page1.txt) in the output folder
+            page_json_filename = f"{page_name}.json"
+            page_txt_filename = f"{page_name}.txt"
+            page_json_path = os.path.join(output_base_dir, page_json_filename)
+            page_txt_path = os.path.join(output_base_dir, page_txt_filename)
+            
+            with open(page_json_path, "w", encoding="utf-8") as f:
+                json.dump(page_data, f, indent=2, cls=SafeJSONEncoder, ensure_ascii=False)
+                
+            with open(page_txt_path, "w", encoding="utf-8") as f:
+                f.write(page_txt_content)
+                
+            print(f"[Saved Individual] Page {page_num} JSON: {page_json_path}")
+            print(f"[Saved Individual] Page {page_num} TXT:  {page_txt_path}")
+            
+            # Collect JSON details
+            combined_json_data[page_name] = page_data
+            
+            # Structure for the frontend response
+            # Visual path is relative web URL path
+            web_image_path = f"/uploads/temp/{filename_base}/page_{page_num}.png" if is_pdf else f"/uploads/{filename_base}.{ext}"
+            
+            pages_results.append({
+                "page_number": page_num,
+                "ocr_result": page_data,
+                "image_path": web_image_path,
+                "json_file": f"/uploads/output/{filename_base}/{page_json_filename}",
+                "txt_file": f"/uploads/output/{filename_base}/{page_txt_filename}"
+            })
+            
+        except Exception as api_err:
+            print(f"[ERROR] API request failed on Page {page_num}: {api_err}")
+            raise api_err
+            
+    # Save combined outputs
+    combined_txt_path = os.path.join(output_base_dir, "extracted_text.txt")
+    with open(combined_txt_path, "w", encoding="utf-8") as f:
+        f.write("\n\n".join(combined_txt_lines))
+        
+    combined_json_path = os.path.join(output_base_dir, "extracted_data.json")
+    with open(combined_json_path, "w", encoding="utf-8") as f:
+        json.dump(combined_json_data, f, indent=2, cls=SafeJSONEncoder, ensure_ascii=False)
+        
+    print(f"[Saved Combined] JSON: {combined_json_path}")
+    print(f"[Saved Combined] TXT:  {combined_txt_path}")
     
-    if first_bracket != -1 and last_bracket != -1 and last_bracket > first_bracket:
-        response_text = response_text[first_bracket:last_bracket + 1]
-    else: 
-        raise ValueError("No valid JSON structure found in LLaMA response wrapper.")
-        
-    print("================ LLM RAW OUTPUT ================")
-    print(response_text)  # Fix: Renamed llm_response to response_text here
-    print("================================================")
+    # Wrap results
+    return {
+        "is_multipage": is_pdf and len(pages_results) > 1,
+        "pages": pages_results
+    }
 
-    parsed_json = json.loads(response_text)
-    
-    if p_inv: parsed_json["invoice_number"] = p_inv
-    if p_date: parsed_json["invoice_date"] = p_date
-    if p_buyer: parsed_json["buyer_name"] = p_buyer
-    if p_comp_gst: parsed_json["company_gst_no"] = p_comp_gst
-    if p_buyer_gst: parsed_json["buyer_gst_no"] = p_buyer_gst
-    if p_words: parsed_json["total_amount_in_words"] = p_words
-    if p_cgst is not None: parsed_json["cgst_amount"] = p_cgst
-    if p_sgst is not None: parsed_json["sgst_amount"] = p_sgst
-    if p_igst is not None: parsed_json["igst_amount"] = p_igst
-
-    if (not parsed_json.get("state_code") or parsed_json["state_code"] == "null") and parsed_json.get("company_gst_no"):
-        parsed_json["state_code"] = parsed_json["company_gst_no"][:2]
-        
-    parsed_json = process_minor_corrections(parsed_json)
-    parsed_json = normalize_all_fields(parsed_json)
-    parsed_json["total_amount_in_words"] = correct_amount_words_with_llm(parsed_json.get("total_amount_in_words"))
-    parsed_json["company_name"] = "NAGANNA RAAJAA SILK INDUSTRIES"
-        
-    with open(final_json_output_path, "w", encoding="utf-8") as json_file:
-        json.dump(parsed_json, json_file, indent=2, ensure_ascii=False)
-        json_file.flush()  
-        os.fsync(json_file.fileno()) 
-
-    return parsed_json
 
 if __name__ == "__main__":
-    run_ocr_pipeline(image_path)
+    if len(sys.argv) > 1:
+        run_ocr_pipeline(sys.argv[1])
+    else:
+        print("Please provide a test image/PDF path.")

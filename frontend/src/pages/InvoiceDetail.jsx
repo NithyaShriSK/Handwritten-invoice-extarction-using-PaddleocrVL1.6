@@ -23,10 +23,18 @@ const sanitizeInvoiceData = (data) => {
   if (!data) return {};
   
   const sanitizeNumber = (val) => {
-    if (val === null || val === undefined || isNaN(Number(val))) {
+    if (val === null || val === undefined || val === '') {
       return 0;
     }
-    return Number(val);
+    if (typeof val === 'number') {
+      return val;
+    }
+    const cleanVal = String(val).replace(/,/g, '').trim();
+    const parsed = parseFloat(cleanVal);
+    if (isNaN(parsed)) {
+      return 0;
+    }
+    return parsed;
   };
 
   const sanitizedProducts = (data.products_list || []).map(prod => ({
@@ -141,23 +149,19 @@ export const InvoiceDetail = () => {
 
   const handleQuantityChange = (index, qty) => {
     const products = watch("products_list") || [];
-    const rate = parseFloat(products[index]?.rate) || 0;
-    const newAmount = Math.round(qty * rate * 100) / 100;
-    setValue(`products_list.${index}.amount`, newAmount);
+    setValue(`products_list.${index}.quantity`, qty);
 
     const updatedProducts = [...products];
-    updatedProducts[index] = { ...updatedProducts[index], quantity: qty, amount: newAmount };
+    updatedProducts[index] = { ...updatedProducts[index], quantity: qty };
     recalculateTotals(updatedProducts);
   };
 
   const handleRateChange = (index, rate) => {
     const products = watch("products_list") || [];
-    const qty = parseFloat(products[index]?.quantity) || 0;
-    const newAmount = Math.round(qty * rate * 100) / 100;
-    setValue(`products_list.${index}.amount`, newAmount);
+    setValue(`products_list.${index}.rate`, rate);
 
     const updatedProducts = [...products];
-    updatedProducts[index] = { ...updatedProducts[index], rate, amount: newAmount };
+    updatedProducts[index] = { ...updatedProducts[index], rate };
     recalculateTotals(updatedProducts);
   };
 

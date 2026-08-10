@@ -10,6 +10,7 @@ import {
   Download,
   AlertTriangle,
   FileCheck,
+  FileText,
   Image as ImageIcon
 } from "lucide-react";
 import { api } from "../services/api";
@@ -20,10 +21,18 @@ const sanitizeInvoiceData = (data) => {
   if (!data) return {};
   
   const sanitizeNumber = (val) => {
-    if (val === null || val === undefined || isNaN(Number(val))) {
+    if (val === null || val === undefined || val === '') {
       return 0;
     }
-    return Number(val);
+    if (typeof val === 'number') {
+      return val;
+    }
+    const cleanVal = String(val).replace(/,/g, '').trim();
+    const parsed = parseFloat(cleanVal);
+    if (isNaN(parsed)) {
+      return 0;
+    }
+    return parsed;
   };
 
   const sanitizedProducts = (data.products_list || []).map(prod => ({
@@ -64,6 +73,13 @@ export const ExtractInvoice = () => {
   const [showDuplicateModal, setShowDuplicateModal] = useState(false);
   const [pendingSavePayload, setPendingSavePayload] = useState(null);
 
+  // Multi-page states
+  const [isMultipage, setIsMultipage] = useState(false);
+  const [pages, setPages] = useState([]);
+  const [currentPageIndex, setCurrentPageIndex] = useState(0);
+  const [pagesFormData, setPagesFormData] = useState([]);
+  const [extractingMessage, setExtractingMessage] = useState("Processing OCR Pipeline...");
+
   // Initialize React Hook Form
   const {
     register,
@@ -72,6 +88,7 @@ export const ExtractInvoice = () => {
     setValue,
     watch,
     reset,
+    getValues,
     formState: { errors }
   } = useForm({
     defaultValues: {
@@ -101,18 +118,54 @@ export const ExtractInvoice = () => {
   // Watch fields for draft saving
   const formValues = watch();
 
+  // Cycle progress messages during PDF extraction
+  useEffect(() => {
+    if (!extracting) {
+      setExtractingMessage("Processing OCR Pipeline...");
+      return;
+    }
+    const isPdfFile = file && file.name.toLowerCase().endsWith(".pdf");
+    if (!isPdfFile) {
+      setExtractingMessage("Extracting invoice data...");
+      return;
+    }
+
+    const messages = [
+      "Processing PDF...",
+      "Analyzing invoice pages...",
+      "Extracting invoice data..."
+    ];
+    let idx = 0;
+    setExtractingMessage(messages[0]);
+
+    const interval = setInterval(() => {
+      idx = (idx + 1) % messages.length;
+      setExtractingMessage(messages[idx]);
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [extracting, file]);
+
   // Load draft from localStorage on mount
   useEffect(() => {
     const savedDraft = localStorage.getItem("invoice_draft");
     if (savedDraft) {
       try {
-        const { original, edited, imagePath } = JSON.parse(savedDraft);
+        const { original, edited, imagePath, isMultipage: draftIsMultipage, pages: draftPages, currentPageIndex: draftPageIndex, pagesFormData: draftPagesFormData } = JSON.parse(savedDraft);
         if (original && edited && imagePath) {
           const sanitizedOriginal = sanitizeInvoiceData(original);
           const sanitizedEdited = sanitizeInvoiceData(edited);
           setOriginalOcrData(sanitizedOriginal);
           setImageUrl(imagePath);
           reset(sanitizedEdited);
+          
+          if (draftIsMultipage && draftPages) {
+            setIsMultipage(true);
+            setPages(draftPages);
+            setCurrentPageIndex(draftPageIndex || 0);
+            setPagesFormData(draftPagesFormData || []);
+          }
+          
           toast.info("Draft restored successfully");
         }
       } catch (e) {
@@ -127,11 +180,15 @@ export const ExtractInvoice = () => {
       const draft = {
         original: originalOcrData,
         edited: formValues,
-        imagePath: imageUrl
+        imagePath: imageUrl,
+        isMultipage,
+        pages,
+        currentPageIndex,
+        pagesFormData
       };
       localStorage.setItem("invoice_draft", JSON.stringify(draft));
     }
-  }, [formValues, originalOcrData, imageUrl]);
+  }, [formValues, originalOcrData, imageUrl, isMultipage, pages, currentPageIndex, pagesFormData]);
 
   // Dynamic Recalculation Handlers (Only triggered on user manual edits)
   const recalculateTotals = (productsList) => {
@@ -149,23 +206,19 @@ export const ExtractInvoice = () => {
 
   const handleQuantityChange = (index, qty) => {
     const products = watch("products_list") || [];
-    const rate = parseFloat(products[index]?.rate) || 0;
-    const newAmount = Math.round(qty * rate * 100) / 100;
-    setValue(`products_list.${index}.amount`, newAmount);
+    setValue(`products_list.${index}.quantity`, qty);
 
     const updatedProducts = [...products];
-    updatedProducts[index] = { ...updatedProducts[index], quantity: qty, amount: newAmount };
+    updatedProducts[index] = { ...updatedProducts[index], quantity: qty };
     recalculateTotals(updatedProducts);
   };
 
   const handleRateChange = (index, rate) => {
     const products = watch("products_list") || [];
-    const qty = parseFloat(products[index]?.quantity) || 0;
-    const newAmount = Math.round(qty * rate * 100) / 100;
-    setValue(`products_list.${index}.amount`, newAmount);
+    setValue(`products_list.${index}.rate`, rate);
 
     const updatedProducts = [...products];
-    updatedProducts[index] = { ...updatedProducts[index], rate, amount: newAmount };
+    updatedProducts[index] = { ...updatedProducts[index], rate };
     recalculateTotals(updatedProducts);
   };
 
@@ -232,11 +285,13 @@ export const ExtractInvoice = () => {
   };
 
   const validateAndSetFile = (selectedFile) => {
-    const allowedTypes = ["image/png", "image/jpeg", "image/jpg"];
+    const allowedTypes = ["image/png", "image/jpeg", "image/jpg", "application/pdf"];
+    const allowedExts = ["png", "jpg", "jpeg", "pdf"];
+    const ext = selectedFile.name.split('.').pop().toLowerCase();
     const maxSize = 10 * 1024 * 1024; // 10MB
 
-    if (!allowedTypes.includes(selectedFile.type)) {
-      toast.error("Unsupported file type. Please upload PNG, JPG, or JPEG.");
+    if (!allowedTypes.includes(selectedFile.type) && !allowedExts.includes(ext)) {
+      toast.error("Unsupported file type. Please upload PNG, JPG, JPEG, or PDF.");
       return;
     }
     if (selectedFile.size > maxSize) {
@@ -249,7 +304,7 @@ export const ExtractInvoice = () => {
   // Trigger Backend OCR
   const handleExtract = async () => {
     if (!file) {
-      toast.warn("Please select an invoice image first.");
+      toast.warn("Please select an invoice file first.");
       return;
     }
 
@@ -277,22 +332,47 @@ export const ExtractInvoice = () => {
       });
       setOriginalOcrData(null);
       setImageUrl("");
+      setIsMultipage(false);
+      setPages([]);
+      setCurrentPageIndex(0);
+      setPagesFormData([]);
       localStorage.removeItem("invoice_draft");
 
       const response = await api.extractInvoice(file);
       console.log("Extract Response:", response.data);
 
       if (response.data.success) {
-        const ocr = response.data.data.ocr_result;
-        const imgPath = response.data.data.invoice_image_path;
-
-        const sanitizedOcr = sanitizeInvoiceData(ocr);
-
-        setOriginalOcrData(sanitizedOcr);
-        setImageUrl(imgPath);
+        const dataPayload = response.data.data;
         
-        // Reset form values with extracted fields
-        reset(sanitizedOcr);
+        if (dataPayload.is_multipage && dataPayload.pages && dataPayload.pages.length > 0) {
+          setIsMultipage(true);
+          setPages(dataPayload.pages);
+          setCurrentPageIndex(0);
+
+          // Initialize independent page form states (one per page, no merging)
+          const initialForms = dataPayload.pages.map(p => sanitizeInvoiceData(p.ocr_result));
+          setPagesFormData(initialForms);
+
+          // Set original extracted data & image path for Page 1
+          const firstPageOriginal = sanitizeInvoiceData(dataPayload.pages[0].ocr_result);
+          setOriginalOcrData(firstPageOriginal);
+          setImageUrl(dataPayload.pages[0].image_path);
+          
+          reset(initialForms[0]);
+        } else {
+          setIsMultipage(false);
+          setPages([]);
+          setCurrentPageIndex(0);
+
+          const ocr = dataPayload.ocr_result;
+          const imgPath = dataPayload.invoice_image_path;
+          const sanitizedOcr = sanitizeInvoiceData(ocr);
+
+          setPagesFormData([sanitizedOcr]);
+          setOriginalOcrData(sanitizedOcr);
+          setImageUrl(imgPath);
+          reset(sanitizedOcr);
+        }
         
         toast.success("Invoice extraction completed!");
       } else {
@@ -306,30 +386,79 @@ export const ExtractInvoice = () => {
     }
   };
 
+  const handlePageChange = (index) => {
+    if (!pages || !pages[index] || !pagesFormData[index]) return;
+    
+    // 1. Save the current form values of the active page into state
+    const currentValues = getValues();
+    const updated = [...pagesFormData];
+    updated[currentPageIndex] = currentValues;
+    setPagesFormData(updated);
+
+    // 2. Switch page index and image preview
+    setCurrentPageIndex(index);
+    setImageUrl(pages[index].image_path);
+
+    // 3. Set the original extracted data for the new page
+    const newPageOriginal = sanitizeInvoiceData(pages[index].ocr_result);
+    setOriginalOcrData(newPageOriginal);
+
+    // 4. Populate form with new page's saved values
+    reset(updated[index]);
+
+    toast.info(`Switched to Page ${index + 1}`);
+  };
+
   // Submit and Save Invoice
   const onSubmit = async (data) => {
     saveInvoiceToDb(data, false);
   };
 
   const saveInvoiceToDb = async (data, force) => {
-    const payload = {
+    // Inject page-wise audit metadata to preserve relationship to original PDF
+    const finalEditedData = {
+      ...data,
+      source_filename: file?.name || "unknown",
+      source_page_number: isMultipage ? (currentPageIndex + 1) : 1,
+      total_pages: isMultipage ? pages.length : 1,
+      document_type: file?.name?.toLowerCase().endsWith(".pdf") ? "pdf" : "image"
+    };
+
+    console.log("Save Payload:", {
       original_extracted_data: originalOcrData,
-      edited_invoice_data: data,
+      edited_invoice_data: finalEditedData,
       invoice_image_path: imageUrl,
       force_save: force
-    };
-    console.log("Save Payload:", payload);
+    });
     try {
-      const response = await api.saveInvoice(originalOcrData, data, imageUrl, force);
+      const response = await api.saveInvoice(originalOcrData, finalEditedData, imageUrl, force);
       if (response.success) {
         toast.success("Invoice saved to database successfully!");
-        // Clear draft after success saving
-        localStorage.removeItem("invoice_draft");
-        handleReset();
+        
+        // Remove saved page from lists if multi-page, or reset if single/last page
+        if (isMultipage && pages.length > 1) {
+          const updatedPages = pages.filter((_, idx) => idx !== currentPageIndex);
+          const updatedFormData = pagesFormData.filter((_, idx) => idx !== currentPageIndex);
+          
+          setPages(updatedPages);
+          setPagesFormData(updatedFormData);
+          
+          // Switch to the first remaining page
+          const nextIndex = 0;
+          setCurrentPageIndex(nextIndex);
+          setImageUrl(updatedPages[nextIndex].image_path);
+          setOriginalOcrData(sanitizeInvoiceData(updatedPages[nextIndex].ocr_result));
+          reset(updatedFormData[nextIndex]);
+          
+          toast.info(`Remaining pages to review: ${updatedPages.length}`);
+        } else {
+          // Clear draft and reset
+          localStorage.removeItem("invoice_draft");
+          handleReset();
+        }
       }
     } catch (err) {
       if (err.response?.status === 409) {
-        // Duplicate warning trigger
         setPendingSavePayload(data);
         setShowDuplicateModal(true);
       } else {
@@ -349,6 +478,10 @@ export const ExtractInvoice = () => {
     setFile(null);
     setImageUrl("");
     setOriginalOcrData(null);
+    setIsMultipage(false);
+    setPages([]);
+    setCurrentPageIndex(0);
+    setPagesFormData([]);
     localStorage.removeItem("invoice_draft");
     reset({
       company_name: "",
@@ -417,14 +550,14 @@ export const ExtractInvoice = () => {
               <p className="text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">
                 Drag and drop your invoice here
               </p>
-              <p className="text-[10px] text-slate-400 mb-4">PNG, JPG, or JPEG up to 10MB</p>
+              <p className="text-[10px] text-slate-400 mb-4">Supported formats: JPG, PNG, PDF (max 15 pages, 10MB)</p>
               
               <label className="cursor-pointer bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold px-4 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 transition-colors">
                 Browse Files
                 <input
                   type="file"
                   onChange={handleFileChange}
-                  accept=".png, .jpg, .jpeg"
+                  accept=".png, .jpg, .jpeg, .pdf"
                   className="hidden"
                 />
               </label>
@@ -448,7 +581,7 @@ export const ExtractInvoice = () => {
               {extracting ? (
                 <>
                   <RefreshCw className="animate-spin" size={16} />
-                  <span>Processing OCR Pipeline...</span>
+                  <span>{extractingMessage}</span>
                 </>
               ) : (
                 <>
@@ -462,9 +595,32 @@ export const ExtractInvoice = () => {
           {/* Image Preview Card */}
           {imageUrl && (
             <div className="glass-card p-6 rounded-2xl">
-              <h3 className="text-md font-bold text-slate-800 dark:text-white mb-4">
-                Invoice Preview
-              </h3>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+                <h3 className="text-md font-bold text-slate-800 dark:text-white">
+                  Invoice Preview {isMultipage && `(Page ${currentPageIndex + 1} of ${pages.length})`}
+                </h3>
+                
+                {/* Page Navigation Selector */}
+                {isMultipage && pages.length > 0 && (
+                  <div className="flex items-center gap-1 flex-wrap">
+                    {pages.map((p, idx) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => handlePageChange(idx)}
+                        className={`px-2.5 py-1 rounded text-[10px] font-bold transition-all ${
+                          currentPageIndex === idx
+                            ? "bg-brand-500 text-white shadow-md shadow-brand-500/10"
+                            : "bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700"
+                        }`}
+                      >
+                        {idx + 1}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               <div className="rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden bg-slate-100 dark:bg-slate-900/60 max-h-96 flex items-center justify-center">
                 <img
                   src={imageUrl.startsWith("/") ? `http://localhost:5000${imageUrl}` : imageUrl}
@@ -472,6 +628,69 @@ export const ExtractInvoice = () => {
                   className="max-h-96 max-w-full object-contain"
                 />
               </div>
+
+              {/* Page-Specific Read-Only Extractions for Multi-page PDFs */}
+              {isMultipage && pages[currentPageIndex] && (
+                <div className="border-t border-slate-200 dark:border-slate-800 pt-4 mt-4 space-y-4">
+                  <h4 className="text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                    <FileText size={14} className="text-brand-500" />
+                    <span>Raw Page {currentPageIndex + 1} Extracted Data (Read-Only)</span>
+                  </h4>
+                  
+                  {/* Metadata fields */}
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-[10px] text-slate-500 dark:text-slate-400 bg-slate-50/40 dark:bg-slate-900/40 p-3 rounded-lg border border-slate-100 dark:border-slate-800/60">
+                    <div className="truncate"><strong>Company Name:</strong> {pages[currentPageIndex].ocr_result?.company_name || "N/A"}</div>
+                    <div className="truncate"><strong>Company GSTIN:</strong> {pages[currentPageIndex].ocr_result?.company_gst_no || "N/A"}</div>
+                    <div className="truncate"><strong>Buyer Name:</strong> {pages[currentPageIndex].ocr_result?.buyer_name || "N/A"}</div>
+                    <div className="truncate"><strong>Buyer GSTIN:</strong> {pages[currentPageIndex].ocr_result?.buyer_gst_no || "N/A"}</div>
+                    <div className="truncate"><strong>Invoice Number:</strong> {pages[currentPageIndex].ocr_result?.invoice_number || "N/A"}</div>
+                    <div className="truncate"><strong>Invoice Date:</strong> {pages[currentPageIndex].ocr_result?.invoice_date || "N/A"}</div>
+                    <div className="truncate"><strong>State Code:</strong> {pages[currentPageIndex].ocr_result?.state_code || "N/A"}</div>
+                    <div className="truncate"><strong>Vehicle Number:</strong> {pages[currentPageIndex].ocr_result?.vehicle_number || "N/A"}</div>
+                    <div className="truncate"><strong>CGST/SGST/IGST:</strong> {pages[currentPageIndex].ocr_result?.cgst_amount || 0}/{pages[currentPageIndex].ocr_result?.sgst_amount || 0}/{pages[currentPageIndex].ocr_result?.igst_amount || 0}</div>
+                    <div className="truncate"><strong>Page Total:</strong> {pages[currentPageIndex].ocr_result?.total_amount || 0}</div>
+                  </div>
+
+                  {/* Products on this page */}
+                  <div className="space-y-2">
+                    <h5 className="text-[10px] font-bold text-slate-600 dark:text-slate-300">
+                      Products Extracted on Page {currentPageIndex + 1}:
+                    </h5>
+                    <div className="overflow-x-auto border border-slate-200 dark:border-slate-850 rounded-lg">
+                      <table className="w-full text-left border-collapse text-[10px]">
+                        <thead>
+                          <tr className="bg-slate-50 dark:bg-slate-900/60 text-slate-500 border-b border-slate-200 dark:border-slate-800">
+                            <th className="p-2 font-semibold">Product Name</th>
+                            <th className="p-2 font-semibold">HSN</th>
+                            <th className="p-2 font-semibold">Qty</th>
+                            <th className="p-2 font-semibold">Rate</th>
+                            <th className="p-2 font-semibold">Amount</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(pages[currentPageIndex].ocr_result?.products_list || []).length > 0 ? (
+                            (pages[currentPageIndex].ocr_result?.products_list || []).map((prod, pIdx) => (
+                              <tr key={pIdx} className="border-t border-slate-100 dark:border-slate-800/60 text-slate-600 dark:text-slate-300">
+                                <td className="p-2 truncate max-w-[120px]" title={prod.product_name}>{prod.product_name || "N/A"}</td>
+                                <td className="p-2 font-mono">{prod.hsn_code || "N/A"}</td>
+                                <td className="p-2">{prod.quantity || 0}</td>
+                                <td className="p-2">₹{prod.rate || 0}</td>
+                                <td className="p-2">₹{prod.amount || 0}</td>
+                              </tr>
+                            ))
+                          ) : (
+                            <tr>
+                              <td colSpan="5" className="p-3 text-center text-slate-400">
+                                No products found on this page
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
