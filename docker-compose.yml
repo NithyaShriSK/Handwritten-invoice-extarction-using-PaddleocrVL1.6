@@ -19,13 +19,13 @@ services:
     image: ollama/ollama:latest
     container_name: invoice_ollama
     ports:
-      - "11434:11434"
+      - "11435:11434"
     volumes:
       - ollama_data:/root/.ollama
     networks:
       - invoice_net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      test: ["CMD", "ollama", "list"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -39,12 +39,11 @@ services:
     volumes:
       - .:/app
       - hf_cache:/root/.cache/huggingface
-      - uploads_data:/app/uploads
-      - reports_data:/app/reports
-      - invoice_slices_data:/app/invoice_slices
+      - ./uploads:/app/uploads
+      - ./reports:/app/reports
+      - ./invoice_slices:/app/invoice_slices
     environment:
-      - MONGODB_URI=mongodb://mongodb:27017/invoice_ocr
-      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_HOST=http://host.docker.internal:11434
       - HF_HOME=/root/.cache/huggingface
     env_file:
       - .env
@@ -53,6 +52,8 @@ services:
         condition: service_healthy
       ollama:
         condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - invoice_net
     healthcheck:
@@ -74,7 +75,7 @@ services:
       context: ./frontend
     container_name: invoice_frontend
     ports:
-      - "5173:5173"
+      - "5174:5173"
     volumes:
       - ./frontend:/app
       - /app/node_modules
