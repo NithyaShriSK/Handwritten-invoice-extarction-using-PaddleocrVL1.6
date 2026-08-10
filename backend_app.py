@@ -550,7 +550,15 @@ def auth_google():
             
         # Verify using official google-auth library
         try:
-            idinfo = id_token.verify_oauth2_token(token, google_requests.Request(), GOOGLE_CLIENT_ID)
+            import requests as py_requests
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            
+            session = py_requests.Session()
+            session.verify = False
+            custom_transport = google_requests.Request(session=session)
+            
+            idinfo = id_token.verify_oauth2_token(token, custom_transport, GOOGLE_CLIENT_ID)
         except ValueError as e:
             return make_failure(f"Token verification failed: {str(e)}", status_code=400)
             
