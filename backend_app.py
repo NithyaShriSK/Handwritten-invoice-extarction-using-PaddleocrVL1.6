@@ -38,6 +38,15 @@ class UploadFileWrapper:
         self.upload_file.file.seek(0)
         with open(destination, "wb") as f:
             f.write(self.upload_file.file.read())
+            
+    def seek(self, *args, **kwargs):
+        return self.upload_file.file.seek(*args, **kwargs)
+        
+    def tell(self, *args, **kwargs):
+        return self.upload_file.file.tell(*args, **kwargs)
+        
+    def read(self, *args, **kwargs):
+        return self.upload_file.file.read(*args, **kwargs)
 
 class RequestProxy:
     def __getattr__(self, name):
