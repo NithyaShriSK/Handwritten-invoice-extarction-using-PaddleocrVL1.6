@@ -160,13 +160,17 @@ async def request_context_middleware(req: Request, call_next):
 
     # 2. Pre-parse files if content-type is multipart/form-data
     files_dict = {}
-    if "multipart/form-data" in req.headers.get("content-type", "").lower():
+    content_type = req.headers.get("content-type", "").lower()
+    if "multipart/form-data" in content_type:
         try:
             form_data = await req.form()
-            from fastapi import UploadFile
+            print(f"[MULTIPART DEBUG] Content-Type: {content_type}, Form keys: {list(form_data.keys())}")
             for key, val in form_data.items():
-                if isinstance(val, UploadFile):
+                if hasattr(val, "filename") and val.filename:
                     files_dict[key] = UploadFileWrapper(val)
+                    print(f"[MULTIPART DEBUG] Added file field: {key}, Filename: {val.filename}")
+                else:
+                    print(f"[MULTIPART DEBUG] Ignored non-file field: {key}, Type: {type(val)}")
         except Exception as e:
             print(f"[MULTIPART PARSE ERROR] {e}")
     req.state.files = files_dict
