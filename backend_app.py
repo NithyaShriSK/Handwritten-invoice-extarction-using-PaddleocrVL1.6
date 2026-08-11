@@ -104,9 +104,46 @@ def translate_flask_path(path: str) -> str:
     translated = re.sub(r"<([^>]+)>", r"{\1}", translated)
     return translated
 
+import inspect
+from functools import wraps
+from fastapi.responses import Response as FastAPIResponse
+
+def process_flask_response(res):
+    if isinstance(res, tuple) and len(res) == 2:
+        val, status_code = res
+        if isinstance(val, FastAPIResponse):
+            val.status_code = status_code
+            return val
+        elif isinstance(val, (dict, list, str, int, float, bool)) or val is None:
+            if isinstance(val, dict):
+                return JSONResponse(content=val, status_code=status_code)
+            elif isinstance(val, str):
+                return Response(content=val, media_type="text/plain", status_code=status_code)
+            else:
+                return JSONResponse(content=val, status_code=status_code)
+    return res
+
+def wrap_flask_handler(f):
+    if inspect.iscoroutinefunction(f):
+        @wraps(f)
+        async def async_inner(*args, **kwargs):
+            res = await f(*args, **kwargs)
+            return process_flask_response(res)
+        return async_inner
+    else:
+        @wraps(f)
+        def sync_inner(*args, **kwargs):
+            res = f(*args, **kwargs)
+            return process_flask_response(res)
+        return sync_inner
+
 def custom_route(rule, **options):
     translated_rule = translate_flask_path(rule)
-    return app.api_route(translated_rule, **options)
+    def decorator(f):
+        wrapped = wrap_flask_handler(f)
+        route_decorator = app.api_route(translated_rule, **options)
+        return route_decorator(wrapped)
+    return decorator
 
 app.route = custom_route
 
